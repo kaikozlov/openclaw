@@ -308,6 +308,37 @@ describe("monitorSignalProvider tool results", () => {
     expect(sendMock.mock.calls[0][1]).toBe("PFX final reply");
   });
 
+  it("drops duplicate inbound envelopes using shared MessageSid dedupe", async () => {
+    replyMock.mockResolvedValue({ text: "final reply" });
+
+    await receiveSignalPayloads({
+      payloads: [
+        {
+          envelope: {
+            sourceNumber: "+15550001111",
+            sourceName: "Ada",
+            timestamp: 1700000000555,
+            dataMessage: {
+              message: "hello",
+            },
+          },
+        },
+        {
+          envelope: {
+            sourceNumber: "+15550001111",
+            sourceName: "Ada",
+            timestamp: 1700000000555,
+            dataMessage: {
+              message: "hello (duplicate delivery)",
+            },
+          },
+        },
+      ],
+    });
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
   it("replies with pairing code when dmPolicy is pairing and no allowFrom is set", async () => {
     setSignalToolResultTestConfig(
       createSignalConfig({ autoStart: false, dmPolicy: "pairing", allowFrom: [] }),
@@ -385,6 +416,22 @@ describe("monitorSignalProvider tool results", () => {
       reactionMessage: {
         emoji: "✅",
         targetAuthor: "+15550002222",
+        targetAuthorUuid: "123e4567-e89b-12d3-a456-426614174000",
+        targetSentTimestamp: 2,
+      },
+    });
+
+    const events = getDirectSignalEventsFor("+15550001111");
+    expect(events.some((text) => text.includes("Signal reaction added"))).toBe(true);
+  });
+
+  it("notifies on own reactions when targetAuthorNumber is present", async () => {
+    setReactionNotificationConfig("own", { account: "+15550002222" });
+    await receiveSingleEnvelope({
+      ...makeBaseEnvelope(),
+      reactionMessage: {
+        emoji: "✅",
+        targetAuthorNumber: "+15550002222",
         targetAuthorUuid: "123e4567-e89b-12d3-a456-426614174000",
         targetSentTimestamp: 2,
       },

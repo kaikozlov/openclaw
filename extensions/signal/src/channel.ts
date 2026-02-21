@@ -45,6 +45,54 @@ const signalMessageActions: ChannelMessageActionAdapter = {
 
 const meta = getChatChannelMeta("signal");
 
+function parseSignalQuoteTimestamp(raw?: string | null): number | undefined {
+  const value = raw?.trim();
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return Math.trunc(parsed);
+}
+
+function clampDirectoryLimit(limit?: number | null): number | undefined {
+  if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) {
+    return undefined;
+  }
+  return Math.trunc(limit);
+}
+
+function applyDirectoryQueryAndLimit<T extends { id: string; name?: string }>(
+  entries: T[],
+  query?: string | null,
+  limit?: number | null,
+): T[] {
+  const q = query?.trim().toLowerCase();
+  const filtered = q
+    ? entries.filter((entry) => {
+        const id = entry.id.toLowerCase();
+        const name = entry.name?.toLowerCase() ?? "";
+        return id.includes(q) || name.includes(q);
+      })
+    : entries;
+  const capped = clampDirectoryLimit(limit);
+  return capped ? filtered.slice(0, capped) : filtered;
+}
+
+function normalizeDirectoryGroupId(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const withoutSignal = trimmed.replace(/^signal:/i, "").trim();
+  if (withoutSignal.toLowerCase().startsWith("group:")) {
+    return withoutSignal.slice("group:".length).trim();
+  }
+  return withoutSignal;
+}
+
 export const signalPlugin: ChannelPlugin<ResolvedSignalAccount> = {
   id: "signal",
   meta: {
@@ -62,6 +110,19 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount> = {
     chatTypes: ["direct", "group"],
     media: true,
     reactions: true,
+    edit: true,
+    reply: true,
+    unsend: true,
+    polls: true,
+    groupManagement: true,
+  },
+  agentPrompt: {
+    messageToolHints: () => [
+      "- Signal reactions require message author targeting. Use `action=react` with `messageId`, `emoji`, and `targetAuthor` (or `targetAuthorUuid`).",
+      "- Reacting to the current user message: set `targetAuthor` to inbound sender id (`sender_id`/`SenderId`) when available.",
+      "- Reacting to your own Signal message: set `fromMe=true` (or set `targetAuthor` to the account number). Do not guess authors.",
+      "- Signal edit/delete actions require a concrete target `messageId` (numeric timestamp). If you do not have one, ask the user for it.",
+    ],
   },
   actions: signalMessageActions,
   streaming: {
@@ -147,6 +208,93 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount> = {
       hint: "<E.164|uuid:ID|group:ID|signal:group:ID|signal:+E.164>",
     },
   },
+  directory: {
+    self: async ({ cfg, accountId }) => {
+      const account = resolveSignalAccount({ cfg, accountId });
+      const id = account.config.account?.trim();
+      if (!id) {
+        return null;
+      }
+      return {
+        kind: "user",
+        id,
+        ...(account.name ? { name: account.name } : {}),
+      };
+    },
+    listPeers: async ({ accountId, query, limit }) => {
+      const contacts = await getSignalRuntime().channel.signal.listSignalContacts({
+        accountId: accountId ?? undefined,
+      });
+      const entries = contacts
+        .map((contact) => {
+          const number = typeof contact.number === "string" ? normalizeE164(contact.number) : "";
+          const uuid = typeof contact.uuid === "string" ? contact.uuid.trim() : "";
+          const id = number || (uuid ? `uuid:${uuid}` : "");
+          if (!id) {
+            return null;
+          }
+          const name = typeof contact.name === "string" ? contact.name.trim() : "";
+          return {
+            kind: "user" as const,
+            id,
+            ...(name ? { name } : {}),
+            raw: contact,
+          };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      return applyDirectoryQueryAndLimit(entries, query, limit);
+    },
+    listGroups: async ({ accountId, query, limit }) => {
+      const groups = await getSignalRuntime().channel.signal.listSignalGroups(
+        {
+          accountId: accountId ?? undefined,
+        },
+        { detailed: false },
+      );
+      const entries = groups
+        .map((group) => {
+          const groupId = typeof group.id === "string" ? group.id.trim() : "";
+          if (!groupId) {
+            return null;
+          }
+          const name = typeof group.name === "string" ? group.name.trim() : "";
+          return {
+            kind: "group" as const,
+            id: `group:${groupId}`,
+            ...(name ? { name } : {}),
+            raw: group,
+          };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      return applyDirectoryQueryAndLimit(entries, query, limit);
+    },
+    listGroupMembers: async ({ accountId, groupId, limit }) => {
+      const members = await getSignalRuntime().channel.signal.listGroupMembersSignal(
+        normalizeDirectoryGroupId(groupId),
+        {
+          accountId: accountId ?? undefined,
+        },
+      );
+      const entries = members
+        .map((member) => {
+          const number = typeof member.number === "string" ? normalizeE164(member.number) : "";
+          const uuid = typeof member.uuid === "string" ? member.uuid.trim() : "";
+          const id = number || (uuid ? `uuid:${uuid}` : "");
+          if (!id) {
+            return null;
+          }
+          const name = typeof member.name === "string" ? member.name.trim() : "";
+          return {
+            kind: "user" as const,
+            id,
+            ...(name ? { name } : {}),
+            raw: member,
+          };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      return applyDirectoryQueryAndLimit(entries, undefined, limit);
+    },
+  },
   setup: {
     resolveAccountId: ({ accountId }) => normalizeAccountId(accountId),
     applyAccountName: ({ cfg, accountId, name }) =>
@@ -228,7 +376,8 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount> = {
     chunker: (text, limit) => getSignalRuntime().channel.text.chunkText(text, limit),
     chunkerMode: "text",
     textChunkLimit: 4000,
-    sendText: async ({ cfg, to, text, accountId, deps }) => {
+    pollMaxOptions: 12,
+    sendText: async ({ cfg, to, text, accountId, deps, replyToId, replyToAuthor }) => {
       const send = deps?.sendSignal ?? getSignalRuntime().channel.signal.sendMessageSignal;
       const maxBytes = resolveChannelMediaMaxBytes({
         cfg,
@@ -237,13 +386,20 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount> = {
           cfg.channels?.signal?.mediaMaxMb,
         accountId,
       });
+      const quoteTimestamp = parseSignalQuoteTimestamp(replyToId);
       const result = await send(to, text, {
         maxBytes,
         accountId: accountId ?? undefined,
+        ...(quoteTimestamp && replyToAuthor
+          ? {
+              quoteTimestamp,
+              quoteAuthor: replyToAuthor,
+            }
+          : {}),
       });
       return { channel: "signal", ...result };
     },
-    sendMedia: async ({ cfg, to, text, mediaUrl, accountId, deps }) => {
+    sendMedia: async ({ cfg, to, text, mediaUrl, accountId, deps, replyToId, replyToAuthor }) => {
       const send = deps?.sendSignal ?? getSignalRuntime().channel.signal.sendMessageSignal;
       const maxBytes = resolveChannelMediaMaxBytes({
         cfg,
@@ -252,13 +408,24 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount> = {
           cfg.channels?.signal?.mediaMaxMb,
         accountId,
       });
+      const quoteTimestamp = parseSignalQuoteTimestamp(replyToId);
       const result = await send(to, text, {
         mediaUrl,
         maxBytes,
         accountId: accountId ?? undefined,
+        ...(quoteTimestamp && replyToAuthor
+          ? {
+              quoteTimestamp,
+              quoteAuthor: replyToAuthor,
+            }
+          : {}),
       });
       return { channel: "signal", ...result };
     },
+    sendPoll: async ({ to, poll, accountId }) =>
+      await getSignalRuntime().channel.signal.sendPollSignal(to, poll, {
+        accountId: accountId ?? undefined,
+      }),
   },
   status: {
     defaultRuntime: createDefaultChannelRuntimeState(DEFAULT_ACCOUNT_ID),

@@ -10,6 +10,7 @@ const DEFAULT_RECONNECT_POLICY: BackoffPolicy = {
   factor: 2,
   jitter: 0.2,
 };
+const DEFAULT_IDLE_TIMEOUT_MS = 60_000;
 
 type RunSignalSseLoopParams = {
   baseUrl: string;
@@ -18,6 +19,7 @@ type RunSignalSseLoopParams = {
   runtime: RuntimeEnv;
   onEvent: (event: SignalSseEvent) => void;
   policy?: Partial<BackoffPolicy>;
+  idleTimeoutMs?: number;
 };
 
 export async function runSignalSseLoop({
@@ -27,12 +29,14 @@ export async function runSignalSseLoop({
   runtime,
   onEvent,
   policy,
+  idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
 }: RunSignalSseLoopParams) {
   const reconnectPolicy = {
     ...DEFAULT_RECONNECT_POLICY,
     ...policy,
   };
   let reconnectAttempts = 0;
+  let consecutiveIdleTimeouts = 0;
 
   const logReconnectVerbose = (message: string) => {
     if (!shouldLogVerbose()) {
@@ -40,33 +44,98 @@ export async function runSignalSseLoop({
     }
     logVerbose(message);
   };
+  const logIdleReconnect = () => {
+    const timeoutMs = Math.trunc(idleTimeoutMs);
+    if (consecutiveIdleTimeouts === 1 || consecutiveIdleTimeouts % 10 === 0) {
+      runtime.log?.(
+        `Signal SSE idle timeout (${timeoutMs}ms), reconnecting stream...` +
+          (consecutiveIdleTimeouts > 1 ? ` [x${consecutiveIdleTimeouts}]` : ""),
+      );
+      return;
+    }
+    logReconnectVerbose(
+      `Signal SSE idle timeout (${timeoutMs}ms), reconnecting stream [x${consecutiveIdleTimeouts}]`,
+    );
+  };
 
   while (!abortSignal?.aborted) {
+    const streamAbortController = new AbortController();
+    const abortStream = () => {
+      streamAbortController.abort();
+    };
+    abortSignal?.addEventListener("abort", abortStream, { once: true });
+    let idleTimedOut = false;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearIdleTimer = () => {
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
+      }
+    };
+    const resetIdleTimer = () => {
+      if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) {
+        return;
+      }
+      clearIdleTimer();
+      idleTimer = setTimeout(() => {
+        idleTimedOut = true;
+        streamAbortController.abort();
+      }, Math.trunc(idleTimeoutMs));
+    };
     try {
+      resetIdleTimer();
       await streamSignalEvents({
         baseUrl,
         account,
-        abortSignal,
+        abortSignal: streamAbortController.signal,
         onEvent: (event) => {
           reconnectAttempts = 0;
+          consecutiveIdleTimeouts = 0;
+          resetIdleTimer();
           onEvent(event);
         },
       });
+      clearIdleTimer();
+      abortSignal?.removeEventListener("abort", abortStream);
       if (abortSignal?.aborted) {
         return;
       }
+      if (idleTimedOut) {
+        consecutiveIdleTimeouts += 1;
+        logIdleReconnect();
+      } else {
+        consecutiveIdleTimeouts = 0;
+      }
       reconnectAttempts += 1;
       const delayMs = computeBackoff(reconnectPolicy, reconnectAttempts);
-      logReconnectVerbose(`Signal SSE stream ended, reconnecting in ${delayMs / 1000}s...`);
+      if (idleTimedOut) {
+        logReconnectVerbose(`Signal SSE reconnect in ${delayMs / 1000}s after idle timeout...`);
+      } else {
+        logReconnectVerbose(`Signal SSE stream ended, reconnecting in ${delayMs / 1000}s...`);
+      }
       await sleepWithAbort(delayMs, abortSignal);
     } catch (err) {
+      clearIdleTimer();
+      abortSignal?.removeEventListener("abort", abortStream);
       if (abortSignal?.aborted) {
         return;
       }
-      runtime.error?.(`Signal SSE stream error: ${String(err)}`);
+      if (idleTimedOut) {
+        consecutiveIdleTimeouts += 1;
+        logIdleReconnect();
+      } else {
+        consecutiveIdleTimeouts = 0;
+        runtime.error?.(`Signal SSE stream error: ${String(err)}`);
+      }
       reconnectAttempts += 1;
       const delayMs = computeBackoff(reconnectPolicy, reconnectAttempts);
-      runtime.log?.(`Signal SSE connection lost, reconnecting in ${delayMs / 1000}s...`);
+      if (idleTimedOut) {
+        logReconnectVerbose(
+          `Signal SSE connection lost after idle timeout, reconnecting in ${delayMs / 1000}s...`,
+        );
+      } else {
+        runtime.log?.(`Signal SSE connection lost, reconnecting in ${delayMs / 1000}s...`);
+      }
       try {
         await sleepWithAbort(delayMs, abortSignal);
       } catch (sleepErr) {

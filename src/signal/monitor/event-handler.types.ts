@@ -11,7 +11,10 @@ export type SignalEnvelope = {
   sourceName?: string | null;
   timestamp?: number | null;
   dataMessage?: SignalDataMessage | null;
-  editMessage?: { dataMessage?: SignalDataMessage | null } | null;
+  editMessage?: {
+    dataMessage?: SignalDataMessage | null;
+    targetSentTimestamp?: number | null;
+  } | null;
   syncMessage?: unknown;
   reactionMessage?: SignalReactionMessage | null;
 };
@@ -28,18 +31,44 @@ export type SignalDataMessage = {
   timestamp?: number;
   message?: string | null;
   attachments?: Array<SignalAttachment>;
+  sticker?: SignalSticker | null;
   mentions?: Array<SignalMention> | null;
   groupInfo?: {
     groupId?: string | null;
     groupName?: string | null;
   } | null;
-  quote?: { text?: string | null } | null;
+  quote?: SignalQuote | null;
   reaction?: SignalReactionMessage | null;
+  pollCreate?: SignalPollCreate | null;
+  pollVote?: SignalPollVote | null;
+  pollTerminate?: SignalPollTerminate | null;
+};
+
+export type SignalSticker = {
+  stickerId?: number | null;
+  packId?: string | null;
+  emoji?: string | null;
+};
+
+export type SignalQuote = {
+  id?: number | string | null;
+  author?: string | null;
+  authorNumber?: string | null;
+  authorUuid?: string | null;
+  text?: string | null;
+  mentions?: Array<SignalMention> | null;
+  attachments?: Array<SignalAttachment> | null;
+  textStyles?: Array<{
+    start?: number | null;
+    length?: number | null;
+    style?: string | null;
+  }> | null;
 };
 
 export type SignalReactionMessage = {
   emoji?: string | null;
   targetAuthor?: string | null;
+  targetAuthorNumber?: string | null;
   targetAuthorUuid?: string | null;
   targetSentTimestamp?: number | null;
   isRemove?: boolean | null;
@@ -47,6 +76,25 @@ export type SignalReactionMessage = {
     groupId?: string | null;
     groupName?: string | null;
   } | null;
+};
+
+export type SignalPollCreate = {
+  question?: string | null;
+  allowMultiple?: boolean | null;
+  options?: Array<string | null> | null;
+};
+
+export type SignalPollVote = {
+  author?: string | null;
+  authorNumber?: string | null;
+  authorUuid?: string | null;
+  targetSentTimestamp?: number | null;
+  optionIndexes?: Array<number | null> | null;
+  voteCount?: number | null;
+};
+
+export type SignalPollTerminate = {
+  targetSentTimestamp?: number | null;
 };
 
 export type SignalAttachment = {
@@ -104,6 +152,7 @@ export type SignalEventHandlerDeps = {
     runtime: RuntimeEnv;
     maxBytes: number;
     textLimit: number;
+    editTimestamp?: number;
   }) => Promise<void>;
   resolveSignalReactionTargets: (reaction: SignalReactionMessage) => SignalReactionTarget[];
   isSignalReactionMessage: (

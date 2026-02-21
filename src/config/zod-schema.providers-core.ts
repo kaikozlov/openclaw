@@ -545,6 +545,8 @@ export const GoogleChatAccountSchema = z
     actions: z
       .object({
         reactions: z.boolean().optional(),
+        editMessage: z.boolean().optional(),
+        deleteMessage: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -741,6 +743,8 @@ export const SignalAccountSchemaBase = z
     cliPath: ExecutableTokenSchema.optional(),
     autoStart: z.boolean().optional(),
     startupTimeoutMs: z.number().int().min(1000).max(120000).optional(),
+    sseIdleTimeoutMs: z.number().int().min(0).optional(),
+    retry: RetryConfigSchema,
     receiveMode: z.union([z.literal("on-start"), z.literal("manual")]).optional(),
     ignoreAttachments: z.boolean().optional(),
     ignoreStories: z.boolean().optional(),
@@ -763,6 +767,9 @@ export const SignalAccountSchemaBase = z
     actions: z
       .object({
         reactions: z.boolean().optional(),
+        editMessage: z.boolean().optional(),
+        deleteMessage: z.boolean().optional(),
+        stickers: z.boolean().optional(),
       })
       .strict()
       .optional(),

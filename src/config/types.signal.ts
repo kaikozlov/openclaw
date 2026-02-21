@@ -1,4 +1,5 @@
 import type { CommonChannelMessagingConfig } from "./types.channel-messaging-common.js";
+import type { OutboundRetryConfig } from "./types.base.js";
 
 export type SignalReactionNotificationMode = "off" | "own" | "all" | "allowlist";
 export type SignalReactionLevel = "off" | "ack" | "minimal" | "extensive";
@@ -18,6 +19,10 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   autoStart?: boolean;
   /** Max time to wait for signal-cli daemon startup (ms, cap 120000). */
   startupTimeoutMs?: number;
+  /** Reconnect SSE stream when no events arrive for this many ms (default: 60000, 0 disables idle watchdog). */
+  sseIdleTimeoutMs?: number;
+  /** Retry policy for outbound Signal RPC sends/edits/deletes/polls/reactions. */
+  retry?: OutboundRetryConfig;
   receiveMode?: "on-start" | "manual";
   ignoreAttachments?: boolean;
   ignoreStories?: boolean;
@@ -32,6 +37,12 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   actions?: {
     /** Enable/disable sending reactions via message tool (default: true). */
     reactions?: boolean;
+    /** Enable/disable editing previously sent messages via message tool (default: true). */
+    editMessage?: boolean;
+    /** Enable/disable deleting previously sent messages via message tool (default: true). */
+    deleteMessage?: boolean;
+    /** Enable/disable sticker actions (`sticker`, `sticker-search`) via message tool (default: false). */
+    stickers?: boolean;
   };
   /**
    * Controls agent reaction behavior:

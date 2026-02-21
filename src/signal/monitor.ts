@@ -25,7 +25,7 @@ import type {
   SignalReactionMessage,
   SignalReactionTarget,
 } from "./monitor/event-handler.types.js";
-import { sendMessageSignal } from "./send.js";
+import { editMessageSignal, sendMessageSignal, type SignalMentionRange } from "./send.js";
 import { runSignalSseLoop } from "./sse-reconnect.js";
 
 export type MonitorSignalOpts = {
@@ -37,6 +37,7 @@ export type MonitorSignalOpts = {
   baseUrl?: string;
   autoStart?: boolean;
   startupTimeoutMs?: number;
+  sseIdleTimeoutMs?: number;
   cliPath?: string;
   httpHost?: string;
   httpPort?: number;
@@ -130,16 +131,49 @@ function normalizeAllowList(raw?: Array<string | number>): string[] {
   return normalizeStringEntries(raw);
 }
 
+const UUID_HYPHENATED_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_COMPACT_RE = /^[0-9a-f]{32}$/i;
+
+function looksLikeUuid(value: string): boolean {
+  if (UUID_HYPHENATED_RE.test(value) || UUID_COMPACT_RE.test(value)) {
+    return true;
+  }
+  const compact = value.replace(/-/g, "");
+  if (!/^[0-9a-f]+$/i.test(compact)) {
+    return false;
+  }
+  return /[a-f]/i.test(compact);
+}
+
 function resolveSignalReactionTargets(reaction: SignalReactionMessage): SignalReactionTarget[] {
   const targets: SignalReactionTarget[] = [];
+  const seen = new Set<string>();
+  const addTarget = (target: SignalReactionTarget) => {
+    const key = `${target.kind}:${target.id}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    targets.push(target);
+  };
+
   const uuid = reaction.targetAuthorUuid?.trim();
   if (uuid) {
-    targets.push({ kind: "uuid", id: uuid, display: `uuid:${uuid}` });
+    addTarget({ kind: "uuid", id: uuid, display: `uuid:${uuid}` });
+  }
+  const authorNumber = reaction.targetAuthorNumber?.trim();
+  if (authorNumber) {
+    const normalized = normalizeE164(authorNumber);
+    addTarget({ kind: "phone", id: normalized, display: normalized });
   }
   const author = reaction.targetAuthor?.trim();
   if (author) {
-    const normalized = normalizeE164(author);
-    targets.push({ kind: "phone", id: normalized, display: normalized });
+    if (looksLikeUuid(author)) {
+      addTarget({ kind: "uuid", id: author, display: `uuid:${author}` });
+    } else {
+      const normalized = normalizeE164(author);
+      addTarget({ kind: "phone", id: normalized, display: normalized });
+    }
   }
   return targets;
 }
@@ -152,7 +186,11 @@ function isSignalReactionMessage(
   }
   const emoji = reaction.emoji?.trim();
   const timestamp = reaction.targetSentTimestamp;
-  const hasTarget = Boolean(reaction.targetAuthor?.trim() || reaction.targetAuthorUuid?.trim());
+  const hasTarget = Boolean(
+    reaction.targetAuthor?.trim() ||
+    reaction.targetAuthorNumber?.trim() ||
+    reaction.targetAuthorUuid?.trim(),
+  );
   return Boolean(emoji && typeof timestamp === "number" && timestamp > 0 && hasTarget);
 }
 
@@ -288,23 +326,141 @@ async function deliverReplies(params: {
   maxBytes: number;
   textLimit: number;
   chunkMode: "length" | "newline";
+  editTimestamp?: number;
 }) {
   const { replies, target, baseUrl, account, accountId, runtime, maxBytes, textLimit, chunkMode } =
     params;
+  let usedDraftEdit = false;
+  const parseSignalMentionRanges = (value: unknown): SignalMentionRange[] | undefined => {
+    if (!Array.isArray(value)) {
+      return undefined;
+    }
+    const mentions: SignalMentionRange[] = [];
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object") {
+        continue;
+      }
+      const start = (entry as { start?: unknown }).start;
+      const length = (entry as { length?: unknown }).length;
+      const recipient = (entry as { recipient?: unknown }).recipient;
+      if (
+        typeof start !== "number" ||
+        !Number.isFinite(start) ||
+        typeof length !== "number" ||
+        !Number.isFinite(length) ||
+        typeof recipient !== "string" ||
+        !recipient.trim()
+      ) {
+        continue;
+      }
+      mentions.push({
+        start: Math.trunc(start),
+        length: Math.trunc(length),
+        recipient: recipient.trim(),
+      });
+    }
+    return mentions.length > 0 ? mentions : undefined;
+  };
   for (const payload of replies) {
     const mediaList = payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []);
     const text = payload.text ?? "";
+    const signalChannelData =
+      payload.channelData && typeof payload.channelData === "object"
+        ? (payload.channelData["signal"] as Record<string, unknown> | undefined)
+        : undefined;
+    const quoteTimestampFromReplyTo = (() => {
+      const replyToId = payload.replyToId?.trim();
+      if (!replyToId) {
+        return undefined;
+      }
+      const parsed = Number.parseInt(replyToId, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return undefined;
+      }
+      return parsed;
+    })();
+    const quoteTimestampFromChannelData =
+      typeof signalChannelData?.quoteTimestamp === "number" &&
+      Number.isFinite(signalChannelData.quoteTimestamp) &&
+      signalChannelData.quoteTimestamp > 0
+        ? Math.trunc(signalChannelData.quoteTimestamp)
+        : undefined;
+    const quoteTimestamp = quoteTimestampFromChannelData ?? quoteTimestampFromReplyTo;
+    const quoteAuthorFromChannelData =
+      typeof signalChannelData?.quoteAuthor === "string"
+        ? signalChannelData.quoteAuthor
+        : undefined;
+    const quoteAuthor = payload.replyToAuthor ?? quoteAuthorFromChannelData;
+    const quoteMessage =
+      typeof signalChannelData?.quoteMessage === "string"
+        ? signalChannelData.quoteMessage
+        : undefined;
+    const quoteOpts =
+      typeof quoteTimestamp === "number" && quoteAuthor?.trim()
+        ? {
+            quoteTimestamp,
+            quoteAuthor,
+            quoteMessage,
+          }
+        : undefined;
+    const previewOpts = signalChannelData
+      ? {
+          ...(typeof signalChannelData.previewUrl === "string" &&
+          signalChannelData.previewUrl.trim()
+            ? { previewUrl: signalChannelData.previewUrl.trim() }
+            : {}),
+          ...(typeof signalChannelData.previewTitle === "string" &&
+          signalChannelData.previewTitle.trim()
+            ? { previewTitle: signalChannelData.previewTitle.trim() }
+            : {}),
+          ...(typeof signalChannelData.previewDescription === "string" &&
+          signalChannelData.previewDescription.trim()
+            ? { previewDescription: signalChannelData.previewDescription.trim() }
+            : {}),
+          ...(typeof signalChannelData.previewImage === "string" &&
+          signalChannelData.previewImage.trim()
+            ? { previewImage: signalChannelData.previewImage.trim() }
+            : {}),
+        }
+      : {};
+    const mentionOpts = (() => {
+      const mentions = parseSignalMentionRanges(signalChannelData?.mentions);
+      return mentions ? { mentions } : {};
+    })();
+    const firstMessageDecorations = {
+      ...quoteOpts,
+      ...previewOpts,
+      ...mentionOpts,
+    };
+    const hasFirstMessageDecorations = Object.keys(firstMessageDecorations).length > 0;
     if (!text && mediaList.length === 0) {
       continue;
     }
+    let hasSentFirstMessageDecorations = false;
     if (mediaList.length === 0) {
       for (const chunk of chunkTextWithMode(text, textLimit, chunkMode)) {
+        if (!usedDraftEdit && typeof params.editTimestamp === "number") {
+          await editMessageSignal(target, chunk, params.editTimestamp, {
+            baseUrl,
+            account,
+            maxBytes,
+            accountId,
+          });
+          usedDraftEdit = true;
+          continue;
+        }
         await sendMessageSignal(target, chunk, {
           baseUrl,
           account,
           maxBytes,
           accountId,
+          ...(hasFirstMessageDecorations && !hasSentFirstMessageDecorations
+            ? firstMessageDecorations
+            : {}),
         });
+        if (hasFirstMessageDecorations && !hasSentFirstMessageDecorations) {
+          hasSentFirstMessageDecorations = true;
+        }
       }
     } else {
       let first = true;
@@ -317,7 +473,13 @@ async function deliverReplies(params: {
           mediaUrl: url,
           maxBytes,
           accountId,
+          ...(hasFirstMessageDecorations && !hasSentFirstMessageDecorations
+            ? firstMessageDecorations
+            : {}),
         });
+        if (hasFirstMessageDecorations && !hasSentFirstMessageDecorations) {
+          hasSentFirstMessageDecorations = true;
+        }
       }
     }
     runtime.log?.(`delivered reply to ${target}`);
@@ -374,6 +536,10 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
   const startupTimeoutMs = Math.min(
     120_000,
     Math.max(1_000, opts.startupTimeoutMs ?? accountInfo.config.startupTimeoutMs ?? 30_000),
+  );
+  const sseIdleTimeoutMs = Math.max(
+    0,
+    Math.trunc(opts.sseIdleTimeoutMs ?? accountInfo.config.sseIdleTimeoutMs ?? 60_000),
   );
   const readReceiptsViaDaemon = Boolean(autoStart && sendReadReceipts);
   const daemonLifecycle = createSignalDaemonLifecycle({ abortSignal: opts.abortSignal });
@@ -452,6 +618,7 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       abortSignal: daemonLifecycle.abortSignal,
       runtime,
       policy: opts.reconnectPolicy,
+      idleTimeoutMs: sseIdleTimeoutMs,
       onEvent: (event) => {
         void handleEvent(event).catch((err) => {
           runtime.error?.(`event handler failed: ${String(err)}`);

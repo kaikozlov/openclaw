@@ -223,6 +223,10 @@ Groups:
 - Use `message action=react` with `channel=signal`.
 - Targets: sender E.164 or UUID (use `uuid:<id>` from pairing output; bare UUID works too).
 - `messageId` is the Signal timestamp for the message you’re reacting to.
+- Direct chats require an explicit author context:
+  - pass `targetAuthor`/`targetAuthorUuid`, or
+  - pass `fromMe=true` to target your own account identity.
+  - When invoked from inbound agent context, OpenClaw uses the trusted requester sender id automatically.
 - Group reactions require `targetAuthor` or `targetAuthorUuid`.
 
 Examples:
@@ -230,6 +234,7 @@ Examples:
 ```
 message action=react channel=signal target=uuid:123e4567-e89b-12d3-a456-426614174000 messageId=1737630212345 emoji=🔥
 message action=react channel=signal target=+15551234567 messageId=1737630212345 emoji=🔥 remove=true
+message action=react channel=signal target=+15551234567 messageId=1737630212345 emoji=🔥 fromMe=true
 message action=react channel=signal target=signal:group:<groupId> targetAuthor=uuid:<sender-uuid> messageId=1737630212345 emoji=✅
 ```
 
@@ -240,6 +245,19 @@ Config:
   - `off`/`ack` disables agent reactions (message tool `react` will error).
   - `minimal`/`extensive` enables agent reactions and sets the guidance level.
 - Per-account overrides: `channels.signal.accounts.<id>.actions.reactions`, `channels.signal.accounts.<id>.reactionLevel`.
+
+## Mentions + stickers
+
+- Outbound Signal messages support explicit mention ranges (`start`, `length`, `recipient`) using UTF-16 offsets.
+- Sticker sends are supported via `packId:stickerId` through `message action=sticker`.
+- Installed sticker packs can be queried via `message action=sticker-search`.
+
+Examples:
+
+```
+message action=sticker channel=signal to=signal:group:<groupId> --sticker-id "<packId>:7"
+message action=sticker-search channel=signal query="cats" limit=10
+```
 
 ## Delivery targets (CLI/cron)
 
@@ -304,6 +322,8 @@ Provider options:
 - `channels.signal.httpHost`, `channels.signal.httpPort`: daemon bind (default 127.0.0.1:8080).
 - `channels.signal.autoStart`: auto-spawn daemon (default true if `httpUrl` unset).
 - `channels.signal.startupTimeoutMs`: startup wait timeout in ms (cap 120000).
+- `channels.signal.sseIdleTimeoutMs`: reconnect idle SSE streams after N ms without events (default 60000, `0` disables idle watchdog).
+- `channels.signal.retry.attempts`, `channels.signal.retry.minDelayMs`, `channels.signal.retry.maxDelayMs`, `channels.signal.retry.jitter`: outbound Signal RPC retry policy.
 - `channels.signal.receiveMode`: `on-start | manual`.
 - `channels.signal.ignoreAttachments`: skip attachment downloads.
 - `channels.signal.ignoreStories`: ignore stories from the daemon.
@@ -317,9 +337,10 @@ Provider options:
 - `channels.signal.textChunkLimit`: outbound chunk size (chars).
 - `channels.signal.chunkMode`: `length` (default) or `newline` to split on blank lines (paragraph boundaries) before length chunking.
 - `channels.signal.mediaMaxMb`: inbound/outbound media cap (MB).
+- `channels.signal.actions.stickers`: enable Signal sticker actions (`sticker`, `sticker-search`) in the message tool (default false).
 
 Related global options:
 
-- `agents.list[].groupChat.mentionPatterns` (Signal does not support native mentions).
+- `agents.list[].groupChat.mentionPatterns` (bot-trigger mention gating; separate from native Signal mention ranges).
 - `messages.groupChat.mentionPatterns` (global fallback).
 - `messages.responsePrefix`.

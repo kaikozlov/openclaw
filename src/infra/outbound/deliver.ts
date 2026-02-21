@@ -23,7 +23,7 @@ import type { sendMessageIMessage } from "../../imessage/send.js";
 import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { markdownToSignalTextChunks, type SignalTextStyleRange } from "../../signal/format.js";
-import { sendMessageSignal } from "../../signal/send.js";
+import { sendMessageSignal, type SignalMentionRange } from "../../signal/send.js";
 import type { sendMessageSlack } from "../../slack/send.js";
 import type { sendMessageTelegram } from "../../telegram/send.js";
 import type { sendMessageWhatsApp } from "../../web/outbound.js";
@@ -82,6 +82,7 @@ type ChannelHandler = {
     payload: ReplyPayload,
     overrides?: {
       replyToId?: string | null;
+      replyToAuthor?: string | null;
       threadId?: string | number | null;
     },
   ) => Promise<OutboundDeliveryResult>;
@@ -89,6 +90,7 @@ type ChannelHandler = {
     text: string,
     overrides?: {
       replyToId?: string | null;
+      replyToAuthor?: string | null;
       threadId?: string | number | null;
     },
   ) => Promise<OutboundDeliveryResult>;
@@ -97,6 +99,7 @@ type ChannelHandler = {
     mediaUrl: string,
     overrides?: {
       replyToId?: string | null;
+      replyToAuthor?: string | null;
       threadId?: string | number | null;
     },
   ) => Promise<OutboundDeliveryResult>;
@@ -108,6 +111,7 @@ type ChannelHandlerParams = {
   to: string;
   accountId?: string;
   replyToId?: string | null;
+  replyToAuthor?: string | null;
   threadId?: string | number | null;
   identity?: OutboundIdentity;
   deps?: OutboundSendDeps;
@@ -140,10 +144,12 @@ function createPluginHandler(
   const chunkerMode = outbound.chunkerMode;
   const resolveCtx = (overrides?: {
     replyToId?: string | null;
+    replyToAuthor?: string | null;
     threadId?: string | number | null;
   }): Omit<ChannelOutboundContext, "text" | "mediaUrl"> => ({
     ...baseCtx,
     replyToId: overrides?.replyToId ?? baseCtx.replyToId,
+    replyToAuthor: overrides?.replyToAuthor ?? baseCtx.replyToAuthor,
     threadId: overrides?.threadId ?? baseCtx.threadId,
   });
   return {
@@ -181,6 +187,7 @@ function createChannelOutboundContextBase(
     to: params.to,
     accountId: params.accountId,
     replyToId: params.replyToId,
+    replyToAuthor: params.replyToAuthor,
     threadId: params.threadId,
     identity: params.identity,
     gifPlayback: params.gifPlayback,
@@ -192,6 +199,127 @@ function createChannelOutboundContextBase(
 
 const isAbortError = (err: unknown): boolean => err instanceof Error && err.name === "AbortError";
 
+type SignalQuoteOptions = {
+  quoteTimestamp: number;
+  quoteAuthor: string;
+  quoteMessage?: string;
+};
+
+type SignalPreviewOptions = {
+  previewUrl?: string;
+  previewTitle?: string;
+  previewDescription?: string;
+  previewImage?: string;
+};
+
+type SignalFirstMessageOptions = SignalPreviewOptions &
+  Partial<Pick<{ mentions: SignalMentionRange[] }, "mentions">> &
+  Partial<Pick<SignalQuoteOptions, "quoteTimestamp" | "quoteAuthor" | "quoteMessage">>;
+
+function parseSignalQuoteTimestamp(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.trunc(value);
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return undefined;
+  }
+  return Math.trunc(parsed);
+}
+
+function parseSignalMentionRanges(value: unknown): SignalMentionRange[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const mentions: SignalMentionRange[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const startRaw = (entry as { start?: unknown }).start;
+    const lengthRaw = (entry as { length?: unknown }).length;
+    const recipientRaw = (entry as { recipient?: unknown }).recipient;
+    if (
+      typeof startRaw !== "number" ||
+      !Number.isFinite(startRaw) ||
+      typeof lengthRaw !== "number" ||
+      !Number.isFinite(lengthRaw) ||
+      typeof recipientRaw !== "string" ||
+      !recipientRaw.trim()
+    ) {
+      continue;
+    }
+    mentions.push({
+      start: Math.trunc(startRaw),
+      length: Math.trunc(lengthRaw),
+      recipient: recipientRaw.trim(),
+    });
+  }
+  return mentions.length > 0 ? mentions : undefined;
+}
+
+function resolveSignalFirstMessageOptions(params: {
+  payload: ReplyPayload;
+  fallbackReplyToId?: string | null;
+  fallbackReplyToAuthor?: string | null;
+}): SignalFirstMessageOptions | undefined {
+  const signalChannelData =
+    params.payload.channelData && typeof params.payload.channelData === "object"
+      ? (params.payload.channelData["signal"] as Record<string, unknown> | undefined)
+      : undefined;
+  const result: SignalFirstMessageOptions = {};
+  const quoteTimestamp =
+    parseSignalQuoteTimestamp(signalChannelData?.quoteTimestamp) ??
+    parseSignalQuoteTimestamp(params.payload.replyToId) ??
+    parseSignalQuoteTimestamp(params.fallbackReplyToId);
+  const quoteAuthorRaw =
+    (typeof signalChannelData?.quoteAuthor === "string"
+      ? signalChannelData.quoteAuthor
+      : undefined) ??
+    params.payload.replyToAuthor ??
+    params.fallbackReplyToAuthor;
+  const quoteAuthor = quoteAuthorRaw?.trim();
+  if (typeof quoteTimestamp === "number" && quoteAuthor) {
+    result.quoteTimestamp = quoteTimestamp;
+    result.quoteAuthor = quoteAuthor;
+    if (
+      typeof signalChannelData?.quoteMessage === "string" &&
+      signalChannelData.quoteMessage.trim()
+    ) {
+      result.quoteMessage = signalChannelData.quoteMessage.trim();
+    }
+  }
+  if (typeof signalChannelData?.previewUrl === "string" && signalChannelData.previewUrl.trim()) {
+    result.previewUrl = signalChannelData.previewUrl.trim();
+  }
+  if (
+    typeof signalChannelData?.previewTitle === "string" &&
+    signalChannelData.previewTitle.trim()
+  ) {
+    result.previewTitle = signalChannelData.previewTitle.trim();
+  }
+  if (
+    typeof signalChannelData?.previewDescription === "string" &&
+    signalChannelData.previewDescription.trim()
+  ) {
+    result.previewDescription = signalChannelData.previewDescription.trim();
+  }
+  if (
+    typeof signalChannelData?.previewImage === "string" &&
+    signalChannelData.previewImage.trim()
+  ) {
+    result.previewImage = signalChannelData.previewImage.trim();
+  }
+  const mentions = parseSignalMentionRanges(signalChannelData?.mentions);
+  if (mentions) {
+    result.mentions = mentions;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 type DeliverOutboundPayloadsCoreParams = {
   cfg: OpenClawConfig;
   channel: Exclude<OutboundChannel, "none">;
@@ -199,6 +327,7 @@ type DeliverOutboundPayloadsCoreParams = {
   accountId?: string;
   payloads: ReplyPayload[];
   replyToId?: string | null;
+  replyToAuthor?: string | null;
   threadId?: string | number | null;
   identity?: OutboundIdentity;
   deps?: OutboundSendDeps;
@@ -306,6 +435,7 @@ async function deliverOutboundPayloadsCore(
     deps,
     accountId,
     replyToId: params.replyToId,
+    replyToAuthor: params.replyToAuthor,
     threadId: params.threadId,
     identity: params.identity,
     gifPlayback: params.gifPlayback,
@@ -334,7 +464,11 @@ async function deliverOutboundPayloadsCore(
 
   const sendTextChunks = async (
     text: string,
-    overrides?: { replyToId?: string | null; threadId?: string | number | null },
+    overrides?: {
+      replyToId?: string | null;
+      replyToAuthor?: string | null;
+      threadId?: string | number | null;
+    },
   ) => {
     throwIfAborted(abortSignal);
     if (!handler.chunker || textLimit === undefined) {
@@ -370,7 +504,11 @@ async function deliverOutboundPayloadsCore(
     }
   };
 
-  const sendSignalText = async (text: string, styles: SignalTextStyleRange[]) => {
+  const sendSignalText = async (
+    text: string,
+    styles: SignalTextStyleRange[],
+    firstMessageOptions?: SignalFirstMessageOptions,
+  ) => {
     throwIfAborted(abortSignal);
     return {
       channel: "signal" as const,
@@ -379,11 +517,15 @@ async function deliverOutboundPayloadsCore(
         accountId: accountId ?? undefined,
         textMode: "plain",
         textStyles: styles,
+        ...firstMessageOptions,
       })),
     };
   };
 
-  const sendSignalTextChunks = async (text: string) => {
+  const sendSignalTextChunks = async (
+    text: string,
+    firstMessageOptions?: SignalFirstMessageOptions,
+  ) => {
     throwIfAborted(abortSignal);
     let signalChunks =
       textLimit === undefined
@@ -394,13 +536,27 @@ async function deliverOutboundPayloadsCore(
     if (signalChunks.length === 0 && text) {
       signalChunks = [{ text, styles: [] }];
     }
+    let hasSentFirstMessageOptions = false;
     for (const chunk of signalChunks) {
       throwIfAborted(abortSignal);
-      results.push(await sendSignalText(chunk.text, chunk.styles));
+      results.push(
+        await sendSignalText(
+          chunk.text,
+          chunk.styles,
+          firstMessageOptions && !hasSentFirstMessageOptions ? firstMessageOptions : undefined,
+        ),
+      );
+      if (firstMessageOptions && !hasSentFirstMessageOptions) {
+        hasSentFirstMessageOptions = true;
+      }
     }
   };
 
-  const sendSignalMedia = async (caption: string, mediaUrl: string) => {
+  const sendSignalMedia = async (
+    caption: string,
+    mediaUrl: string,
+    firstMessageOptions?: SignalFirstMessageOptions,
+  ) => {
     throwIfAborted(abortSignal);
     const formatted = markdownToSignalTextChunks(caption, Number.POSITIVE_INFINITY, {
       tableMode: signalTableMode,
@@ -417,6 +573,7 @@ async function deliverOutboundPayloadsCore(
         textMode: "plain",
         textStyles: formatted.styles,
         mediaLocalRoots,
+        ...firstMessageOptions,
       })),
     };
   };
@@ -525,6 +682,7 @@ async function deliverOutboundPayloadsCore(
       params.onPayload?.(payloadSummary);
       const sendOverrides = {
         replyToId: effectivePayload.replyToId ?? params.replyToId ?? undefined,
+        replyToAuthor: effectivePayload.replyToAuthor ?? params.replyToAuthor ?? undefined,
         threadId: params.threadId ?? undefined,
       };
       if (handler.sendPayload && effectivePayload.channelData) {
@@ -540,7 +698,12 @@ async function deliverOutboundPayloadsCore(
       if (payloadSummary.mediaUrls.length === 0) {
         const beforeCount = results.length;
         if (isSignalChannel) {
-          await sendSignalTextChunks(payloadSummary.text);
+          const signalFirstMessageOptions = resolveSignalFirstMessageOptions({
+            payload: effectivePayload,
+            fallbackReplyToId: sendOverrides.replyToId,
+            fallbackReplyToAuthor: sendOverrides.replyToAuthor,
+          });
+          await sendSignalTextChunks(payloadSummary.text, signalFirstMessageOptions);
         } else {
           await sendTextChunks(payloadSummary.text, sendOverrides);
         }
@@ -555,14 +718,29 @@ async function deliverOutboundPayloadsCore(
 
       let first = true;
       let lastMessageId: string | undefined;
+      const signalFirstMessageOptions = resolveSignalFirstMessageOptions({
+        payload: effectivePayload,
+        fallbackReplyToId: sendOverrides.replyToId,
+        fallbackReplyToAuthor: sendOverrides.replyToAuthor,
+      });
+      let hasSentSignalFirstMessageOptions = false;
       for (const url of payloadSummary.mediaUrls) {
         throwIfAborted(abortSignal);
         const caption = first ? payloadSummary.text : "";
         first = false;
         if (isSignalChannel) {
-          const delivery = await sendSignalMedia(caption, url);
+          const delivery = await sendSignalMedia(
+            caption,
+            url,
+            signalFirstMessageOptions && !hasSentSignalFirstMessageOptions
+              ? signalFirstMessageOptions
+              : undefined,
+          );
           results.push(delivery);
           lastMessageId = delivery.messageId;
+          if (signalFirstMessageOptions && !hasSentSignalFirstMessageOptions) {
+            hasSentSignalFirstMessageOptions = true;
+          }
         } else {
           const delivery = await handler.sendMedia(caption, url, sendOverrides);
           results.push(delivery);

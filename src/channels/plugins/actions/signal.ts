@@ -1,7 +1,19 @@
-import { createActionGate, jsonResult, readStringParam } from "../../../agents/tools/common.js";
+import {
+  createActionGate,
+  jsonResult,
+  readNumberParam,
+  readStringArrayParam,
+  readStringParam,
+} from "../../../agents/tools/common.js";
 import { listEnabledSignalAccounts, resolveSignalAccount } from "../../../signal/accounts.js";
 import { resolveSignalReactionLevel } from "../../../signal/reaction-level.js";
 import { sendReactionSignal, removeReactionSignal } from "../../../signal/send-reactions.js";
+import {
+  deleteMessageSignal,
+  editMessageSignal,
+  listStickerPacksSignal,
+  sendStickerSignal,
+} from "../../../signal/send.js";
 import type { ChannelMessageActionAdapter, ChannelMessageActionName } from "../types.js";
 
 const providerId = "signal";
@@ -38,32 +50,64 @@ function resolveSignalReactionTarget(raw: string): { recipient?: string; groupId
   return { recipient: normalizeSignalReactionRecipient(withoutSignal) };
 }
 
-async function mutateSignalReaction(params: {
-  accountId?: string;
-  target: { recipient?: string; groupId?: string };
-  timestamp: number;
-  emoji: string;
-  remove?: boolean;
-  targetAuthor?: string;
-  targetAuthorUuid?: string;
-}) {
-  const options = {
-    accountId: params.accountId,
-    groupId: params.target.groupId,
-    targetAuthor: params.targetAuthor,
-    targetAuthorUuid: params.targetAuthorUuid,
-  };
-  if (params.remove) {
-    await removeReactionSignal(
-      params.target.recipient ?? "",
-      params.timestamp,
-      params.emoji,
-      options,
-    );
-    return jsonResult({ ok: true, removed: params.emoji });
+function parseSignalMessageTimestamp(raw: string): number {
+  const timestamp = parseInt(raw, 10);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`Invalid messageId: ${raw}. Expected numeric timestamp.`);
   }
-  await sendReactionSignal(params.target.recipient ?? "", params.timestamp, params.emoji, options);
-  return jsonResult({ ok: true, added: params.emoji });
+  return timestamp;
+}
+
+function isSignalActionEnabled(params: {
+  cfg: Parameters<typeof resolveSignalAccount>[0]["cfg"];
+  accountId?: string;
+  action: "reactions" | "editMessage" | "deleteMessage" | "stickers";
+  defaultValue?: boolean;
+}) {
+  const actionConfig = resolveSignalAccount({ cfg: params.cfg, accountId: params.accountId }).config
+    .actions;
+  return createActionGate(actionConfig)(params.action, params.defaultValue);
+}
+
+function parseSignalStickerParams(params: Record<string, unknown>): {
+  packId: string;
+  stickerId: number;
+} {
+  const stickerIds = readStringArrayParam(params, "stickerId");
+  const packIdParam = readStringParam(params, "packId");
+  const stickerIdParam = readNumberParam(params, "stickerNum", {
+    integer: true,
+  });
+  const firstSticker = stickerIds?.[0]?.trim();
+  if (firstSticker?.includes(":")) {
+    const [packIdRaw, stickerIdRaw] = firstSticker.split(":", 2);
+    const packId = packIdRaw?.trim();
+    const stickerId = Number.parseInt(stickerIdRaw?.trim() ?? "", 10);
+    if (!packId || !Number.isFinite(stickerId) || stickerId < 0) {
+      throw new Error("Signal stickerId must be in packId:stickerId format.");
+    }
+    return { packId, stickerId };
+  }
+  const packId = packIdParam?.trim();
+  if (!packId) {
+    throw new Error("Signal sticker requires packId or stickerId=packId:stickerId.");
+  }
+  const stickerId =
+    stickerIdParam ??
+    (() => {
+      if (!firstSticker) {
+        return Number.NaN;
+      }
+      const parsed = Number.parseInt(firstSticker, 10);
+      return parsed;
+    })();
+  if (!Number.isFinite(stickerId) || stickerId < 0) {
+    throw new Error("Signal sticker requires a non-negative sticker ID.");
+  }
+  return {
+    packId,
+    stickerId: Math.trunc(stickerId),
+  };
 }
 
 export const signalMessageActions: ChannelMessageActionAdapter = {
@@ -85,12 +129,37 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
     if (reactionsEnabled) {
       actions.add("react");
     }
+    const editEnabled = configuredAccounts.some((account) =>
+      createActionGate(account.config.actions)("editMessage"),
+    );
+    if (editEnabled) {
+      actions.add("edit");
+    }
+    const deleteEnabled = configuredAccounts.some((account) =>
+      createActionGate(account.config.actions)("deleteMessage"),
+    );
+    if (deleteEnabled) {
+      actions.add("delete");
+    }
+    const stickerEnabled = configuredAccounts.some((account) =>
+      createActionGate(account.config.actions)("stickers", false),
+    );
+    if (stickerEnabled) {
+      actions.add("sticker");
+      actions.add("sticker-search");
+    }
 
     return Array.from(actions);
   },
-  supportsAction: ({ action }) => action !== "send",
+  supportsAction: ({ action }) =>
+    action === "react" ||
+    action === "edit" ||
+    action === "delete" ||
+    action === "unsend" ||
+    action === "sticker" ||
+    action === "sticker-search",
 
-  handleAction: async ({ action, params, cfg, accountId }) => {
+  handleAction: async ({ action, params, cfg, accountId, requesterSenderId, toolContext }) => {
     if (action === "send") {
       throw new Error("Send should be handled by outbound, not actions handler.");
     }
@@ -109,9 +178,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
       }
 
       // Also check the action gate for backward compatibility
-      const actionConfig = resolveSignalAccount({ cfg, accountId }).config.actions;
-      const isActionEnabled = createActionGate(actionConfig);
-      if (!isActionEnabled("reactions")) {
+      if (!isSignalActionEnabled({ cfg, accountId: accountId ?? undefined, action: "reactions" })) {
         throw new Error("Signal reactions are disabled via actions.reactions.");
       }
 
@@ -130,47 +197,181 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
         required: true,
         label: "messageId (timestamp)",
       });
-      const targetAuthor = readStringParam(params, "targetAuthor");
+      const fromMe = params.fromMe === true;
+      let targetAuthor = readStringParam(params, "targetAuthor");
       const targetAuthorUuid = readStringParam(params, "targetAuthorUuid");
+      const requesterAuthor = requesterSenderId
+        ? normalizeSignalReactionRecipient(requesterSenderId)
+        : undefined;
+      const currentInboundMessageId =
+        typeof toolContext?.currentThreadTs === "string" ? toolContext.currentThreadTs.trim() : "";
+      const shouldUseRequesterAuthorFallback =
+        Boolean(requesterAuthor) &&
+        (!currentInboundMessageId || currentInboundMessageId === messageId.trim());
+      if (!targetAuthor && !targetAuthorUuid && fromMe) {
+        const accountNumber = resolveSignalAccount({
+          cfg,
+          accountId: accountId ?? undefined,
+        }).config.account;
+        targetAuthor = accountNumber ? normalizeSignalReactionRecipient(accountNumber) : undefined;
+      }
+      if (!targetAuthor && !targetAuthorUuid && shouldUseRequesterAuthorFallback) {
+        targetAuthor = requesterAuthor;
+      }
       if (target.groupId && !targetAuthor && !targetAuthorUuid) {
-        throw new Error("targetAuthor or targetAuthorUuid required for group reactions.");
+        throw new Error(
+          "targetAuthor or targetAuthorUuid required for group reactions. Use inbound sender_id/SenderId for the message author (or fromMe=true for your own message); do not guess.",
+        );
+      }
+      if (!target.groupId && !targetAuthor && !targetAuthorUuid) {
+        throw new Error(
+          "targetAuthor or targetAuthorUuid required for direct Signal reactions. Use inbound sender_id/SenderId for the message author, or --from-me for your own messages; do not guess.",
+        );
       }
 
       const emoji = readStringParam(params, "emoji", { allowEmpty: true });
       const remove = typeof params.remove === "boolean" ? params.remove : undefined;
 
-      const timestamp = parseInt(messageId, 10);
-      if (!Number.isFinite(timestamp)) {
-        throw new Error(`Invalid messageId: ${messageId}. Expected numeric timestamp.`);
-      }
+      const timestamp = parseSignalMessageTimestamp(messageId);
 
       if (remove) {
         if (!emoji) {
           throw new Error("Emoji required to remove reaction.");
         }
-        return await mutateSignalReaction({
+        await removeReactionSignal(target.recipient ?? "", timestamp, emoji, {
           accountId: accountId ?? undefined,
-          target,
-          timestamp,
-          emoji,
-          remove: true,
+          groupId: target.groupId,
           targetAuthor,
           targetAuthorUuid,
         });
+        return jsonResult({ ok: true, removed: emoji });
       }
 
       if (!emoji) {
         throw new Error("Emoji required to add reaction.");
       }
-      return await mutateSignalReaction({
+      await sendReactionSignal(target.recipient ?? "", timestamp, emoji, {
         accountId: accountId ?? undefined,
-        target,
-        timestamp,
-        emoji,
-        remove: false,
+        groupId: target.groupId,
         targetAuthor,
         targetAuthorUuid,
       });
+      return jsonResult({ ok: true, added: emoji });
+    }
+
+    if (action === "edit") {
+      if (
+        !isSignalActionEnabled({ cfg, accountId: accountId ?? undefined, action: "editMessage" })
+      ) {
+        throw new Error("Signal edit is disabled via actions.editMessage.");
+      }
+      const recipient =
+        readStringParam(params, "recipient") ??
+        readStringParam(params, "to", {
+          required: true,
+          label: "recipient (phone number, UUID, or group)",
+        });
+      const messageId = readStringParam(params, "messageId", {
+        required: true,
+        label: "messageId (timestamp)",
+      });
+      const content = readStringParam(params, "message", {
+        required: true,
+        allowEmpty: false,
+      });
+      const timestamp = parseSignalMessageTimestamp(messageId);
+      await editMessageSignal(recipient, content, timestamp, {
+        accountId: accountId ?? undefined,
+      });
+      return jsonResult({ ok: true, edited: true, messageId });
+    }
+
+    if (action === "delete" || action === "unsend") {
+      if (
+        !isSignalActionEnabled({ cfg, accountId: accountId ?? undefined, action: "deleteMessage" })
+      ) {
+        throw new Error("Signal delete is disabled via actions.deleteMessage.");
+      }
+      const recipient =
+        readStringParam(params, "recipient") ??
+        readStringParam(params, "to", {
+          required: true,
+          label: "recipient (phone number, UUID, or group)",
+        });
+      const messageId = readStringParam(params, "messageId", {
+        required: true,
+        label: "messageId (timestamp)",
+      });
+      const timestamp = parseSignalMessageTimestamp(messageId);
+      await deleteMessageSignal(recipient, timestamp, {
+        accountId: accountId ?? undefined,
+      });
+      return jsonResult({ ok: true, deleted: true, messageId });
+    }
+
+    if (action === "sticker") {
+      if (
+        !isSignalActionEnabled({
+          cfg,
+          accountId: accountId ?? undefined,
+          action: "stickers",
+          defaultValue: false,
+        })
+      ) {
+        throw new Error("Signal sticker actions are disabled via actions.stickers.");
+      }
+      const recipient =
+        readStringParam(params, "recipient") ??
+        readStringParam(params, "to", {
+          required: true,
+          label: "recipient (phone number, UUID, or group)",
+        });
+      const { packId, stickerId } = parseSignalStickerParams(params);
+      const result = await sendStickerSignal(recipient, packId, stickerId, {
+        accountId: accountId ?? undefined,
+      });
+      return jsonResult({
+        ok: true,
+        messageId: result.messageId,
+        timestamp: result.timestamp,
+        packId,
+        stickerId,
+      });
+    }
+
+    if (action === "sticker-search") {
+      if (
+        !isSignalActionEnabled({
+          cfg,
+          accountId: accountId ?? undefined,
+          action: "stickers",
+          defaultValue: false,
+        })
+      ) {
+        throw new Error("Signal sticker actions are disabled via actions.stickers.");
+      }
+      const query = readStringParam(params, "query");
+      const limit = readNumberParam(params, "limit", { integer: true });
+      const normalizedQuery = query?.trim().toLowerCase();
+      const packs = await listStickerPacksSignal({
+        accountId: accountId ?? undefined,
+      });
+      const filtered = normalizedQuery
+        ? packs.filter((pack) => {
+            const fields = [
+              typeof pack.packId === "string" ? pack.packId : "",
+              typeof pack.id === "string" ? pack.id : "",
+              typeof pack.title === "string" ? pack.title : "",
+              typeof pack.author === "string" ? pack.author : "",
+            ]
+              .join(" ")
+              .toLowerCase();
+            return fields.includes(normalizedQuery);
+          })
+        : packs;
+      const capped =
+        typeof limit === "number" && limit > 0 ? filtered.slice(0, Math.trunc(limit)) : filtered;
+      return jsonResult({ ok: true, packs: capped });
     }
 
     throw new Error(`Action ${action} not supported for ${providerId}.`);

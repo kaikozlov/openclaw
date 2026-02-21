@@ -251,11 +251,25 @@ function buildReactionSchema() {
           "snake_case alias of messageId. For Telegram, if omitted, defaults to the current inbound message id when available.",
       }),
     ),
-    emoji: Type.Optional(Type.String()),
-    remove: Type.Optional(Type.Boolean()),
-    targetAuthor: Type.Optional(Type.String()),
-    targetAuthorUuid: Type.Optional(Type.String()),
-    groupId: Type.Optional(Type.String()),
+    emoji: Type.Optional(Type.String({ description: "Reaction emoji to add/remove." })),
+    remove: Type.Optional(Type.Boolean({ description: "Remove reaction instead of adding one." })),
+    targetAuthor: Type.Optional(
+      Type.String({
+        description:
+          "Signal: author of the target message (phone or uuid). Required when reacting unless fromMe=true.",
+      }),
+    ),
+    targetAuthorUuid: Type.Optional(
+      Type.String({
+        description:
+          "Signal: UUID form of target message author. Alternative to targetAuthor for reactions.",
+      }),
+    ),
+    groupId: Type.Optional(
+      Type.String({
+        description: "Signal group id for reaction actions when target uses group routing.",
+      }),
+    ),
   };
 }
 
@@ -265,7 +279,12 @@ function buildFetchSchema() {
     before: Type.Optional(Type.String()),
     after: Type.Optional(Type.String()),
     around: Type.Optional(Type.String()),
-    fromMe: Type.Optional(Type.Boolean()),
+    fromMe: Type.Optional(
+      Type.Boolean({
+        description:
+          'Use provider-native "from me" behavior when supported (Signal reactions: author is your own account).',
+      }),
+    ),
     includeArchived: Type.Optional(Type.Boolean()),
   };
 }

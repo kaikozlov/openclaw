@@ -4,7 +4,11 @@ import type { OpenClawConfig } from "../config/config.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { defaultRuntime } from "../runtime.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
-import { __testing, listAllChannelSupportedActions } from "./channel-tools.js";
+import {
+  __testing,
+  listAllChannelSupportedActions,
+  resolveChannelMessageToolHints,
+} from "./channel-tools.js";
 
 describe("channel tools", () => {
   const errorSpy = vi.spyOn(defaultRuntime, "error").mockImplementation(() => undefined);
@@ -20,6 +24,9 @@ describe("channel tools", () => {
         blurb: "test plugin",
       },
       capabilities: { chatTypes: ["direct"] },
+      agentPrompt: {
+        messageToolHints: () => ["- test hint"],
+      },
       config: {
         listAccountIds: () => [],
         resolveAccount: () => ({}),
@@ -48,5 +55,15 @@ describe("channel tools", () => {
 
     expect(listAllChannelSupportedActions({ cfg })).toEqual([]);
     expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves message tool hints via channel dock", () => {
+    const cfg = {} as OpenClawConfig;
+    expect(
+      resolveChannelMessageToolHints({
+        cfg,
+        channel: "test",
+      }),
+    ).toEqual(["- test hint"]);
   });
 });

@@ -339,6 +339,98 @@ describe("deliverOutboundPayloads", () => {
     });
   });
 
+  it("applies Signal quote-reply and preview params on the first chunk only", async () => {
+    const sendSignal = vi.fn().mockResolvedValue({ messageId: "s1", timestamp: 123 });
+    const cfg: OpenClawConfig = {
+      channels: { signal: { textChunkLimit: 4 } },
+    };
+
+    await deliverOutboundPayloads({
+      cfg,
+      channel: "signal",
+      to: "+1555",
+      replyToId: "1700000000123",
+      replyToAuthor: "uuid:123e4567-e89b-12d3-a456-426614174000",
+      payloads: [
+        {
+          text: "abcdef",
+          channelData: {
+            signal: {
+              previewUrl: "https://example.com/post",
+              previewTitle: "Example title",
+              previewDescription: "Example description",
+              previewImage: "https://example.com/preview.png",
+            },
+          },
+        },
+      ],
+      deps: { sendSignal },
+    });
+
+    expect(sendSignal).toHaveBeenCalledTimes(2);
+    expect(sendSignal.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({
+        quoteTimestamp: 1700000000123,
+        quoteAuthor: "uuid:123e4567-e89b-12d3-a456-426614174000",
+        previewUrl: "https://example.com/post",
+        previewTitle: "Example title",
+        previewDescription: "Example description",
+        previewImage: "https://example.com/preview.png",
+      }),
+    );
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("quoteTimestamp");
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("quoteAuthor");
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("previewUrl");
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("previewTitle");
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("previewDescription");
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("previewImage");
+  });
+
+  it("applies Signal first-message quote and preview params on the first media send only", async () => {
+    const sendSignal = vi.fn().mockResolvedValue({ messageId: "s1", timestamp: 123 });
+
+    await deliverOutboundPayloads({
+      cfg: {},
+      channel: "signal",
+      to: "+1555",
+      replyToId: "1700000000123",
+      replyToAuthor: "uuid:123e4567-e89b-12d3-a456-426614174000",
+      payloads: [
+        {
+          text: "media caption",
+          mediaUrls: ["https://example.com/a.jpg", "https://example.com/b.jpg"],
+          channelData: {
+            signal: {
+              previewUrl: "https://example.com/post",
+              previewTitle: "Example title",
+            },
+          },
+        },
+      ],
+      deps: { sendSignal },
+    });
+
+    expect(sendSignal).toHaveBeenCalledTimes(2);
+    expect(sendSignal.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({
+        mediaUrl: "https://example.com/a.jpg",
+        quoteTimestamp: 1700000000123,
+        quoteAuthor: "uuid:123e4567-e89b-12d3-a456-426614174000",
+        previewUrl: "https://example.com/post",
+        previewTitle: "Example title",
+      }),
+    );
+    expect(sendSignal.mock.calls[1]?.[2]).toEqual(
+      expect.objectContaining({
+        mediaUrl: "https://example.com/b.jpg",
+      }),
+    );
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("quoteTimestamp");
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("quoteAuthor");
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("previewUrl");
+    expect(sendSignal.mock.calls[1]?.[2]).not.toHaveProperty("previewTitle");
+  });
+
   it("chunks WhatsApp text and returns all results", async () => {
     const { sendWhatsApp, results } = await runChunkedWhatsAppDelivery();
 

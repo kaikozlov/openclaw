@@ -477,6 +477,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
   const silent = readBooleanParam(params, "silent");
 
   const replyToId = readStringParam(params, "replyTo");
+  const replyToAuthor = readStringParam(params, "replyToAuthor");
   const resolvedThreadId = resolveAndApplyOutboundThreadId(params, {
     channel,
     to,
@@ -544,6 +545,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
     gifPlayback,
     bestEffort: bestEffort ?? undefined,
     replyToId: replyToId ?? undefined,
+    replyToAuthor: replyToAuthor ?? undefined,
     threadId: resolvedThreadId ?? undefined,
   });
 

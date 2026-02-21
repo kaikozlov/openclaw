@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   resolveOutboundTarget: vi.fn(() => ({ ok: true, to: "resolved" })),
   resolveMessageChannelSelection: vi.fn(),
   sendPoll: vi.fn(async () => ({ messageId: "poll-1" })),
+  getChannelPlugin: vi.fn(() => ({ outbound: { sendPoll: vi.fn() } })),
+  normalizeChannelId: vi.fn((value: string) => (value === "webchat" ? null : value)),
 }));
 
 vi.mock("../../config/config.js", async () => {
@@ -22,8 +24,8 @@ vi.mock("../../config/config.js", async () => {
 });
 
 vi.mock("../../channels/plugins/index.js", () => ({
-  getChannelPlugin: () => ({ outbound: { sendPoll: mocks.sendPoll } }),
-  normalizeChannelId: (value: string) => (value === "webchat" ? null : value),
+  getChannelPlugin: mocks.getChannelPlugin,
+  normalizeChannelId: mocks.normalizeChannelId,
 }));
 
 vi.mock("../../infra/outbound/targets.js", () => ({
@@ -88,6 +90,7 @@ describe("gateway send mirroring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.resolveOutboundTarget.mockReturnValue({ ok: true, to: "resolved" });
+    mocks.getChannelPlugin.mockReturnValue({ outbound: { sendPoll: mocks.sendPoll } });
     mocks.resolveMessageChannelSelection.mockResolvedValue({
       channel: "slack",
       configured: ["slack"],
@@ -131,7 +134,40 @@ describe("gateway send mirroring", () => {
       false,
       undefined,
       expect.objectContaining({
-        message: expect.stringContaining("text or media is required"),
+        message: expect.stringContaining("text, media, or channelData is required"),
+      }),
+    );
+  });
+
+  it("forwards channelData payloads to outbound delivery", async () => {
+    mockDeliverySuccess("m-channel-data");
+
+    await runSend({
+      to: "signal:group:abc",
+      message: "hi kai",
+      channel: "signal",
+      idempotencyKey: "idem-channel-data",
+      channelData: {
+        signal: {
+          mentions: [{ start: 3, length: 3, recipient: "+17724858102" }],
+        },
+      },
+    });
+
+    expect(mocks.deliverOutboundPayloads).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloads: [
+          {
+            text: "hi kai",
+            mediaUrl: undefined,
+            mediaUrls: undefined,
+            channelData: {
+              signal: {
+                mentions: [{ start: 3, length: 3, recipient: "+17724858102" }],
+              },
+            },
+          },
+        ],
       }),
     );
   });
@@ -383,6 +419,96 @@ describe("gateway send mirroring", () => {
       expect.objectContaining({
         channel: "slack",
       }),
+    );
+  });
+});
+
+describe("gateway poll routing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.resolveOutboundTarget.mockReturnValue({ ok: true, to: "resolved" });
+    mocks.getChannelPlugin.mockReturnValue({ outbound: {} });
+  });
+
+  it("rejects durationSeconds for non-telegram poll channels", async () => {
+    const { respond } = await runPoll({
+      to: "group:abc",
+      question: "Ready?",
+      options: ["Yes", "No"],
+      durationSeconds: 60,
+      channel: "signal",
+      idempotencyKey: "poll-duration-seconds",
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("durationSeconds is only supported for Telegram polls"),
+      }),
+    );
+  });
+
+  it("rejects isAnonymous for non-telegram poll channels", async () => {
+    const { respond } = await runPoll({
+      to: "group:abc",
+      question: "Ready?",
+      options: ["Yes", "No"],
+      isAnonymous: false,
+      channel: "signal",
+      idempotencyKey: "poll-anon",
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("isAnonymous is only supported for Telegram polls"),
+      }),
+    );
+  });
+
+  it("routes signal polls through outbound.sendPoll with normalized input", async () => {
+    const sendPollMock = vi.fn(async () => ({
+      channel: "signal",
+      messageId: "1700000004000",
+    }));
+    mocks.getChannelPlugin.mockReturnValue({
+      outbound: {
+        pollMaxOptions: 12,
+        sendPoll: sendPollMock,
+      },
+    });
+
+    const { respond } = await runPoll({
+      to: "signal:group:test-group-id",
+      question: " Deploy where? ",
+      options: [" us-east ", " eu-west "],
+      maxSelections: 1,
+      channel: "signal",
+      accountId: "work",
+      idempotencyKey: "poll-signal-route",
+    });
+
+    expect(sendPollMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "resolved",
+        accountId: "work",
+        poll: expect.objectContaining({
+          question: "Deploy where?",
+          options: ["us-east", "eu-west"],
+          maxSelections: 1,
+        }),
+      }),
+    );
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        channel: "signal",
+        messageId: "1700000004000",
+      }),
+      undefined,
+      expect.objectContaining({ channel: "signal" }),
     );
   });
 });

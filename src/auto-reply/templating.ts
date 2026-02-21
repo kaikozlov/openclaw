@@ -66,6 +66,12 @@ export type MsgContext = {
   ReplyToForwardedFromUsername?: string;
   ReplyToForwardedFromTitle?: string;
   ReplyToForwardedDate?: number;
+  /** True when inbound content represents an edit of a prior message. */
+  IsEdited?: boolean;
+  /** Timestamp/id of the original message being edited (channel-specific). */
+  EditTargetTimestamp?: number;
+  /** Best-effort original message body for edited inbound messages. */
+  EditOriginalBody?: string;
   ForwardedFrom?: string;
   ForwardedFromType?: string;
   ForwardedFromId?: string;

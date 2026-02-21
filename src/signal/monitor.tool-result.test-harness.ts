@@ -82,6 +82,8 @@ vi.mock("../auto-reply/reply.js", () => ({
 
 vi.mock("./send.js", () => ({
   sendMessageSignal: (...args: unknown[]) => sendMock(...args),
+  editMessageSignal: (...args: unknown[]) => sendMock(...args),
+  deleteMessageSignal: vi.fn().mockResolvedValue(undefined),
   sendTypingSignal: vi.fn().mockResolvedValue(true),
   sendReadReceiptSignal: vi.fn().mockResolvedValue(true),
 }));

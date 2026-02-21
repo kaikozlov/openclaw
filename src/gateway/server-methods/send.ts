@@ -103,6 +103,7 @@ export const sendHandlers: GatewayRequestHandlers = {
       message?: string;
       mediaUrl?: string;
       mediaUrls?: string[];
+      channelData?: Record<string, unknown>;
       gifPlayback?: boolean;
       channel?: string;
       accountId?: string;
@@ -138,11 +139,21 @@ export const sendHandlers: GatewayRequestHandlers = {
           .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
           .filter((entry) => entry.length > 0)
       : undefined;
-    if (!message && !mediaUrl && (mediaUrls?.length ?? 0) === 0) {
+    const channelData =
+      request.channelData &&
+      typeof request.channelData === "object" &&
+      !Array.isArray(request.channelData)
+        ? request.channelData
+        : undefined;
+    const hasChannelData = Boolean(channelData && Object.keys(channelData).length > 0);
+    if (!message && !mediaUrl && (mediaUrls?.length ?? 0) === 0 && !hasChannelData) {
       respond(
         false,
         undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, "invalid send params: text or media is required"),
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "invalid send params: text, media, or channelData is required",
+        ),
       );
       return;
     }
@@ -193,7 +204,7 @@ export const sendHandlers: GatewayRequestHandlers = {
         }
         const outboundDeps = context.deps ? createOutboundSendDeps(context.deps) : undefined;
         const mirrorPayloads = normalizeReplyPayloadsForDelivery([
-          { text: message, mediaUrl, mediaUrls },
+          { text: message, mediaUrl, mediaUrls, channelData },
         ]);
         const mirrorText = mirrorPayloads
           .map((payload) => payload.text)
@@ -232,7 +243,7 @@ export const sendHandlers: GatewayRequestHandlers = {
           channel: outboundChannel,
           to: resolved.to,
           accountId,
-          payloads: [{ text: message, mediaUrl, mediaUrls }],
+          payloads: [{ text: message, mediaUrl, mediaUrls, channelData }],
           agentId: providedSessionKey
             ? resolveSessionAgentId({ sessionKey: providedSessionKey, config: cfg })
             : derivedAgentId,

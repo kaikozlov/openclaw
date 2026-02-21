@@ -76,7 +76,7 @@ Name lookup:
   - Optional: `--emoji`, `--remove`, `--participant`, `--from-me`, `--target-author`, `--target-author-uuid`
   - Note: `--remove` requires `--emoji` (omit `--emoji` to clear own reactions where supported; see /tools/reactions)
   - WhatsApp only: `--participant`, `--from-me`
-  - Signal group reactions: `--target-author` or `--target-author-uuid` required
+  - Signal direct/group reactions: author context is required. Use `--target-author` / `--target-author-uuid`, or `--from-me` for your own Signal messages in direct chats.
 
 - `reactions`
   - Channels: Discord/Google Chat/Slack
@@ -250,6 +250,14 @@ React in a Signal group:
 openclaw message react --channel signal \
   --target signal:group:abc123 --message-id 1737630212345 \
   --emoji "✅" --target-author-uuid 123e4567-e89b-12d3-a456-426614174000
+```
+
+React to your own Signal DM message:
+
+```
+openclaw message react --channel signal \
+  --target +15551234567 --message-id 1737630212345 \
+  --emoji "✅" --from-me
 ```
 
 Send Telegram inline buttons:
