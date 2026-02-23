@@ -180,6 +180,24 @@ function resolveSignalRetryConfig(retry?: SignalRetryConfig): Required<SignalRet
   };
 }
 
+function parseSignalRpcResponse<T>(text: string): SignalRpcResponse<T> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new SignalNetworkError("Signal RPC returned invalid JSON", { cause: error });
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new SignalNetworkError("Signal RPC returned invalid response envelope");
+  }
+  const envelope = parsed as SignalRpcResponse<T>;
+  const hasResult = Object.hasOwn(envelope, "result");
+  if (!envelope.error && !hasResult) {
+    throw new SignalNetworkError("Signal RPC returned invalid response envelope");
+  }
+  return envelope;
+}
+
 export function isRecoverableSignalError(error: Error): boolean {
   if (error instanceof SignalTimeoutError || error instanceof SignalNetworkError) {
     return true;
@@ -243,12 +261,7 @@ export async function signalRpcRequest<T = unknown>(
   if (!text) {
     return undefined as T;
   }
-  let parsed: SignalRpcResponse<T>;
-  try {
-    parsed = JSON.parse(text) as SignalRpcResponse<T>;
-  } catch (error) {
-    throw new SignalNetworkError("Signal RPC returned invalid JSON", { cause: error });
-  }
+  const parsed = parseSignalRpcResponse<T>(text);
   if (parsed.error) {
     const code = parsed.error.code ?? "unknown";
     const msg = parsed.error.message ?? "Signal RPC error";

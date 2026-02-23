@@ -63,6 +63,22 @@ describe("signal client typed errors and retry", () => {
     ).rejects.toBeInstanceOf(SignalHttpError);
   });
 
+  it("throws SignalNetworkError for malformed RPC envelopes", async () => {
+    const { signalRpcRequest, SignalNetworkError } = await import("./client.js");
+    fetchWithTimeoutMock.mockResolvedValueOnce(
+      makeResponse({
+        text: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "1",
+        }),
+      }),
+    );
+
+    await expect(
+      signalRpcRequest("send", { recipient: ["+15550001111"] }, { baseUrl: "http://signal.local" }),
+    ).rejects.toBeInstanceOf(SignalNetworkError);
+  });
+
   it("retries recoverable timeouts with backoff", async () => {
     const { signalRpcRequestWithRetry } = await import("./client.js");
     fetchWithTimeoutMock.mockRejectedValueOnce(new Error("request timeout")).mockResolvedValueOnce(

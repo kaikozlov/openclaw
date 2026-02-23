@@ -19,6 +19,16 @@ import type { ChannelMessageActionAdapter, ChannelMessageActionName } from "../t
 const providerId = "signal";
 const GROUP_PREFIX = "group:";
 
+function readSignalRecipientParam(params: Record<string, unknown>): string {
+  return (
+    readStringParam(params, "recipient") ??
+    readStringParam(params, "to", {
+      required: true,
+      label: "recipient (phone number, UUID, or group)",
+    })
+  );
+}
+
 function normalizeSignalReactionRecipient(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -51,7 +61,7 @@ function resolveSignalReactionTarget(raw: string): { recipient?: string; groupId
 }
 
 function parseSignalMessageTimestamp(raw: string): number {
-  const timestamp = parseInt(raw, 10);
+  const timestamp = Number.parseInt(raw, 10);
   if (!Number.isFinite(timestamp)) {
     throw new Error(`Invalid messageId: ${raw}. Expected numeric timestamp.`);
   }
@@ -160,6 +170,8 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
     action === "sticker-search",
 
   handleAction: async ({ action, params, cfg, accountId, requesterSenderId, toolContext }) => {
+    const resolvedAccountId = accountId ?? undefined;
+
     if (action === "send") {
       throw new Error("Send should be handled by outbound, not actions handler.");
     }
@@ -168,7 +180,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
       // Check reaction level first
       const reactionLevelInfo = resolveSignalReactionLevel({
         cfg,
-        accountId: accountId ?? undefined,
+        accountId: resolvedAccountId,
       });
       if (!reactionLevelInfo.agentReactionsEnabled) {
         throw new Error(
@@ -178,16 +190,11 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
       }
 
       // Also check the action gate for backward compatibility
-      if (!isSignalActionEnabled({ cfg, accountId: accountId ?? undefined, action: "reactions" })) {
+      if (!isSignalActionEnabled({ cfg, accountId: resolvedAccountId, action: "reactions" })) {
         throw new Error("Signal reactions are disabled via actions.reactions.");
       }
 
-      const recipientRaw =
-        readStringParam(params, "recipient") ??
-        readStringParam(params, "to", {
-          required: true,
-          label: "recipient (UUID, phone number, or group)",
-        });
+      const recipientRaw = readSignalRecipientParam(params);
       const target = resolveSignalReactionTarget(recipientRaw);
       if (!target.recipient && !target.groupId) {
         throw new Error("recipient or group required");
@@ -211,7 +218,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
       if (!targetAuthor && !targetAuthorUuid && fromMe) {
         const accountNumber = resolveSignalAccount({
           cfg,
-          accountId: accountId ?? undefined,
+          accountId: resolvedAccountId,
         }).config.account;
         targetAuthor = accountNumber ? normalizeSignalReactionRecipient(accountNumber) : undefined;
       }
@@ -239,7 +246,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
           throw new Error("Emoji required to remove reaction.");
         }
         await removeReactionSignal(target.recipient ?? "", timestamp, emoji, {
-          accountId: accountId ?? undefined,
+          accountId: resolvedAccountId,
           groupId: target.groupId,
           targetAuthor,
           targetAuthorUuid,
@@ -251,7 +258,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
         throw new Error("Emoji required to add reaction.");
       }
       await sendReactionSignal(target.recipient ?? "", timestamp, emoji, {
-        accountId: accountId ?? undefined,
+        accountId: resolvedAccountId,
         groupId: target.groupId,
         targetAuthor,
         targetAuthorUuid,
@@ -260,17 +267,10 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
     }
 
     if (action === "edit") {
-      if (
-        !isSignalActionEnabled({ cfg, accountId: accountId ?? undefined, action: "editMessage" })
-      ) {
+      if (!isSignalActionEnabled({ cfg, accountId: resolvedAccountId, action: "editMessage" })) {
         throw new Error("Signal edit is disabled via actions.editMessage.");
       }
-      const recipient =
-        readStringParam(params, "recipient") ??
-        readStringParam(params, "to", {
-          required: true,
-          label: "recipient (phone number, UUID, or group)",
-        });
+      const recipient = readSignalRecipientParam(params);
       const messageId = readStringParam(params, "messageId", {
         required: true,
         label: "messageId (timestamp)",
@@ -281,30 +281,23 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
       });
       const timestamp = parseSignalMessageTimestamp(messageId);
       await editMessageSignal(recipient, content, timestamp, {
-        accountId: accountId ?? undefined,
+        accountId: resolvedAccountId,
       });
       return jsonResult({ ok: true, edited: true, messageId });
     }
 
     if (action === "delete" || action === "unsend") {
-      if (
-        !isSignalActionEnabled({ cfg, accountId: accountId ?? undefined, action: "deleteMessage" })
-      ) {
+      if (!isSignalActionEnabled({ cfg, accountId: resolvedAccountId, action: "deleteMessage" })) {
         throw new Error("Signal delete is disabled via actions.deleteMessage.");
       }
-      const recipient =
-        readStringParam(params, "recipient") ??
-        readStringParam(params, "to", {
-          required: true,
-          label: "recipient (phone number, UUID, or group)",
-        });
+      const recipient = readSignalRecipientParam(params);
       const messageId = readStringParam(params, "messageId", {
         required: true,
         label: "messageId (timestamp)",
       });
       const timestamp = parseSignalMessageTimestamp(messageId);
       await deleteMessageSignal(recipient, timestamp, {
-        accountId: accountId ?? undefined,
+        accountId: resolvedAccountId,
       });
       return jsonResult({ ok: true, deleted: true, messageId });
     }
@@ -313,22 +306,17 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
       if (
         !isSignalActionEnabled({
           cfg,
-          accountId: accountId ?? undefined,
+          accountId: resolvedAccountId,
           action: "stickers",
           defaultValue: false,
         })
       ) {
         throw new Error("Signal sticker actions are disabled via actions.stickers.");
       }
-      const recipient =
-        readStringParam(params, "recipient") ??
-        readStringParam(params, "to", {
-          required: true,
-          label: "recipient (phone number, UUID, or group)",
-        });
+      const recipient = readSignalRecipientParam(params);
       const { packId, stickerId } = parseSignalStickerParams(params);
       const result = await sendStickerSignal(recipient, packId, stickerId, {
-        accountId: accountId ?? undefined,
+        accountId: resolvedAccountId,
       });
       return jsonResult({
         ok: true,
@@ -343,7 +331,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
       if (
         !isSignalActionEnabled({
           cfg,
-          accountId: accountId ?? undefined,
+          accountId: resolvedAccountId,
           action: "stickers",
           defaultValue: false,
         })
@@ -354,7 +342,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
       const limit = readNumberParam(params, "limit", { integer: true });
       const normalizedQuery = query?.trim().toLowerCase();
       const packs = await listStickerPacksSignal({
-        accountId: accountId ?? undefined,
+        accountId: resolvedAccountId,
       });
       const filtered = normalizedQuery
         ? packs.filter((pack) => {
