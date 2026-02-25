@@ -53,14 +53,16 @@ function bindSignalCliOutput(params: {
   stream: NodeJS.ReadableStream | null | undefined;
   log: (message: string) => void;
   error: (message: string) => void;
+  /** When true, suppress informational lines (events arrive via TCP socket). */
+  quiet?: boolean;
 }): void {
   params.stream?.on("data", (data) => {
     for (const line of data.toString().split(/\r?\n/)) {
       const kind = classifySignalCliLogLine(line);
-      if (kind === "log") {
-        params.log(`signal-cli: ${line.trim()}`);
-      } else if (kind === "error") {
+      if (kind === "error") {
         params.error(`signal-cli: ${line.trim()}`);
+      } else if (kind === "log" && !params.quiet) {
+        params.log(`signal-cli: ${line.trim()}`);
       }
     }
   });
@@ -120,8 +122,9 @@ export function spawnSignalDaemon(opts: SignalDaemonOpts): SignalDaemonHandle {
     resolveExit(value);
   };
 
-  bindSignalCliOutput({ stream: child.stdout, log, error });
-  bindSignalCliOutput({ stream: child.stderr, log, error });
+  const quiet = Boolean(opts.tcpHost && opts.tcpPort);
+  bindSignalCliOutput({ stream: child.stdout, log, error, quiet });
+  bindSignalCliOutput({ stream: child.stderr, log, error, quiet });
   child.once("exit", (code, signal) => {
     settleExit({
       source: "process",
