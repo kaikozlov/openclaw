@@ -16,7 +16,7 @@ import { createNonExitingRuntime, type RuntimeEnv } from "../runtime.js";
 import { normalizeStringEntries } from "../shared/string-normalization.js";
 import { normalizeE164 } from "../utils.js";
 import { resolveSignalAccount } from "./accounts.js";
-import { signalCheck, signalRpcRequest } from "./client.js";
+import { setSignalSocketClient, signalCheck, signalRpcRequest } from "./client.js";
 import { formatSignalDaemonExit, spawnSignalDaemon, type SignalDaemonHandle } from "./daemon.js";
 import { isSignalSenderAllowed, type resolveSignalSender } from "./identity.js";
 import { createSignalEventHandler } from "./monitor/event-handler.js";
@@ -26,6 +26,7 @@ import type {
   SignalReactionTarget,
 } from "./monitor/event-handler.types.js";
 import { editMessageSignal, sendMessageSignal, type SignalMentionRange } from "./send.js";
+import { SignalSocketClient, type SignalSocketEvent } from "./socket-client.js";
 import { runSignalSseLoop } from "./sse-reconnect.js";
 
 export type MonitorSignalOpts = {
@@ -41,6 +42,8 @@ export type MonitorSignalOpts = {
   cliPath?: string;
   httpHost?: string;
   httpPort?: number;
+  tcpHost?: string;
+  tcpPort?: number;
   receiveMode?: "on-start" | "manual";
   ignoreAttachments?: boolean;
   ignoreStories?: boolean;
@@ -545,6 +548,18 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
   const daemonLifecycle = createSignalDaemonLifecycle({ abortSignal: opts.abortSignal });
   let daemonHandle: SignalDaemonHandle | null = null;
 
+  const tcpHost =
+    opts.tcpHost ??
+    accountInfo.tcpHost ??
+    accountInfo.config.tcpHost?.trim() ??
+    (autoStart ? "127.0.0.1" : undefined);
+  const tcpPort =
+    opts.tcpPort ??
+    accountInfo.tcpPort ??
+    accountInfo.config.tcpPort ??
+    (autoStart ? 7583 : undefined);
+  const useTcp = Boolean(tcpHost && tcpPort);
+
   if (autoStart) {
     const cliPath = opts.cliPath ?? accountInfo.config.cliPath ?? "signal-cli";
     const httpHost = opts.httpHost ?? accountInfo.config.httpHost ?? "127.0.0.1";
@@ -554,6 +569,8 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       account,
       httpHost,
       httpPort,
+      tcpHost: useTcp ? tcpHost : undefined,
+      tcpPort: useTcp ? tcpPort : undefined,
       receiveMode: opts.receiveMode ?? accountInfo.config.receiveMode,
       ignoreAttachments: opts.ignoreAttachments ?? accountInfo.config.ignoreAttachments,
       ignoreStories: opts.ignoreStories ?? accountInfo.config.ignoreStories,
@@ -584,6 +601,19 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       }
     }
 
+    // Create socket client for TCP transport (used for both RPC and event reception)
+    let socketClient: SignalSocketClient | undefined;
+    if (useTcp && tcpHost && tcpPort) {
+      socketClient = new SignalSocketClient({
+        host: tcpHost,
+        port: tcpPort,
+        reconnect: true,
+        reconnectPolicy: opts.reconnectPolicy,
+        log: (msg) => runtime.log?.(msg),
+        error: (msg) => runtime.error?.(msg),
+      });
+    }
+
     const handleEvent = createSignalEventHandler({
       runtime,
       cfg,
@@ -612,19 +642,68 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       buildSignalReactionSystemEventText,
     });
 
-    await runSignalSseLoop({
-      baseUrl,
-      account,
-      abortSignal: daemonLifecycle.abortSignal,
-      runtime,
-      policy: opts.reconnectPolicy,
-      idleTimeoutMs: sseIdleTimeoutMs,
-      onEvent: (event) => {
-        void handleEvent(event).catch((err) => {
-          runtime.error?.(`event handler failed: ${String(err)}`);
-        });
-      },
-    });
+    if (socketClient) {
+      // TCP socket mode: events arrive as JSON-RPC notifications on the socket
+      socketClient.connect();
+      try {
+        await socketClient.waitForConnect(daemonLifecycle.abortSignal);
+      } catch {
+        if (daemonLifecycle.abortSignal?.aborted) {
+          socketClient.close();
+          const exitErr = daemonLifecycle.getExitError();
+          if (exitErr) {
+            throw exitErr;
+          }
+          return;
+        }
+        throw new Error("Signal socket client failed to connect");
+      }
+
+      // Register socket client so all RPC calls route through it
+      setSignalSocketClient(socketClient);
+
+      // Run event loop: socket client fires onEvent for each notification.
+      // We await a promise that only resolves when the abort signal fires.
+      const eventLoop = new Promise<void>((resolve) => {
+        socketClient.onEvent = (event: SignalSocketEvent) => {
+          // Wrap socket events as SSE-shaped events for the handler
+          const sseEvent = {
+            event: event.method,
+            data: typeof event.params === "string" ? event.params : JSON.stringify(event.params),
+          };
+          void handleEvent(sseEvent).catch((err) => {
+            runtime.error?.(`event handler failed: ${String(err)}`);
+          });
+        };
+        const onAbort = () => resolve();
+        if (daemonLifecycle.abortSignal?.aborted) {
+          resolve();
+          return;
+        }
+        daemonLifecycle.abortSignal?.addEventListener("abort", onAbort, { once: true });
+      });
+      try {
+        await eventLoop;
+      } finally {
+        setSignalSocketClient(null);
+        socketClient.close();
+      }
+    } else {
+      // SSE fallback: used for external/remote signal-cli instances without TCP
+      await runSignalSseLoop({
+        baseUrl,
+        account,
+        abortSignal: daemonLifecycle.abortSignal,
+        runtime,
+        policy: opts.reconnectPolicy,
+        idleTimeoutMs: sseIdleTimeoutMs,
+        onEvent: (event) => {
+          void handleEvent(event).catch((err) => {
+            runtime.error?.(`event handler failed: ${String(err)}`);
+          });
+        },
+      });
+    }
     const daemonExitError = daemonLifecycle.getExitError();
     if (daemonExitError) {
       throw daemonExitError;

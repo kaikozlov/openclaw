@@ -66,9 +66,16 @@ function createSignalConfig(overrides: Record<string, unknown> = {}): Record<str
 
 function createAutoAbortController() {
   const abortController = new AbortController();
+  // Abort when SSE stream starts (non-TCP path)
   streamMock.mockImplementation(async () => {
     abortController.abort();
     return;
+  });
+  // Also abort asynchronously for TCP path where SSE is never called
+  queueMicrotask(() => {
+    if (!abortController.signal.aborted) {
+      abortController.abort();
+    }
   });
   return abortController;
 }
@@ -274,6 +281,12 @@ describe("monitorSignalProvider tool results", () => {
     );
     streamMock.mockImplementationOnce(async () => {
       abortController.abort(new Error("stop"));
+    });
+    // TCP path: abort asynchronously since SSE stream won't be called
+    queueMicrotask(() => {
+      if (!abortController.signal.aborted) {
+        abortController.abort(new Error("stop"));
+      }
     });
 
     await expect(

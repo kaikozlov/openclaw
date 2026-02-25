@@ -9,6 +9,9 @@ export type ResolvedSignalAccount = {
   enabled: boolean;
   name?: string;
   baseUrl: string;
+  /** TCP socket endpoint for signal-cli, if configured. */
+  tcpHost?: string;
+  tcpPort?: number;
   configured: boolean;
   config: SignalAccountConfig;
 };
@@ -44,19 +47,25 @@ export function resolveSignalAccount(params: {
   const host = merged.httpHost?.trim() || "127.0.0.1";
   const port = merged.httpPort ?? 8080;
   const baseUrl = merged.httpUrl?.trim() || `http://${host}:${port}`;
+  const tcpHost = merged.tcpHost?.trim() || undefined;
+  const tcpPort = merged.tcpPort ?? undefined;
   const configured = Boolean(
     merged.account?.trim() ||
     merged.httpUrl?.trim() ||
     merged.cliPath?.trim() ||
     merged.httpHost?.trim() ||
     typeof merged.httpPort === "number" ||
-    typeof merged.autoStart === "boolean",
+    typeof merged.autoStart === "boolean" ||
+    tcpHost ||
+    typeof merged.tcpPort === "number",
   );
   return {
     accountId,
     enabled,
     name: merged.name?.trim() || undefined,
     baseUrl,
+    tcpHost,
+    tcpPort,
     configured,
     config: merged,
   };

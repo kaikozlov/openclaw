@@ -2,10 +2,13 @@ import { randomUUID } from "node:crypto";
 import { computeBackoff, sleepWithAbort } from "../infra/backoff.js";
 import { resolveFetch } from "../infra/fetch.js";
 import { fetchWithTimeout } from "../utils/fetch-timeout.js";
+import type { SignalSocketClient } from "./socket-client.js";
 
 export type SignalRpcOptions = {
   baseUrl: string;
   timeoutMs?: number;
+  /** When set, RPC calls route through this persistent socket instead of HTTP. */
+  socketClient?: SignalSocketClient;
 };
 
 export type SignalRpcErrorPayload = {
@@ -26,6 +29,19 @@ export type SignalSseEvent = {
   data?: string;
   id?: string;
 };
+
+// Module-level socket client registry: when set, signalRpcRequest routes through it automatically.
+let activeSocketClient: SignalSocketClient | null = null;
+
+/** Register a persistent socket client for all RPC calls to use. */
+export function setSignalSocketClient(client: SignalSocketClient | null): void {
+  activeSocketClient = client;
+}
+
+/** Get the currently registered socket client (if any). */
+export function getSignalSocketClient(): SignalSocketClient | null {
+  return activeSocketClient;
+}
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_RETRY_ATTEMPTS = 3;
@@ -224,6 +240,25 @@ export async function signalRpcRequest<T = unknown>(
   params: Record<string, unknown> | undefined,
   opts: SignalRpcOptions,
 ): Promise<T> {
+  // Route through persistent TCP socket when available (per-opts or module-level)
+  const socketClient = opts.socketClient ?? activeSocketClient;
+  if (socketClient?.isConnected) {
+    try {
+      return await socketClient.request<T>(method, params, {
+        timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      });
+    } catch (err) {
+      // Wrap socket errors in existing error types for consistent retry behavior
+      if (err instanceof Error) {
+        if (err.message.includes("timed out")) {
+          throw new SignalTimeoutError(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, { cause: err });
+        }
+        throw new SignalNetworkError(err.message, { cause: err });
+      }
+      throw new SignalNetworkError(String(err));
+    }
+  }
+
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const id = randomUUID();

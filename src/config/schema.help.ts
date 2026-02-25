@@ -1338,6 +1338,10 @@ export const FIELD_HELP: Record<string, string> = {
     "Debounce window (ms) for batching rapid consecutive messages from the same sender (0 to disable).",
   "channels.signal.dmPolicy":
     'Direct message access control ("pairing" recommended). "open" requires channels.signal.allowFrom=["*"].',
+  "channels.signal.tcpHost":
+    "TCP socket host for signal-cli daemon when using persistent socket transport (default: 127.0.0.1).",
+  "channels.signal.tcpPort":
+    "TCP socket port for signal-cli daemon when using persistent socket transport (default: 7583).",
   "channels.signal.sseIdleTimeoutMs":
     "Reconnect idle Signal SSE streams after this many ms without events (default: 60000, 0 disables).",
   "channels.signal.retry.attempts":

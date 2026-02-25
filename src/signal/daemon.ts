@@ -6,6 +6,9 @@ export type SignalDaemonOpts = {
   account?: string;
   httpHost: string;
   httpPort: number;
+  /** Enable TCP socket mode (--tcp). When set, events come over the socket, not stdout. */
+  tcpHost?: string;
+  tcpPort?: number;
   receiveMode?: "on-start" | "manual";
   ignoreAttachments?: boolean;
   ignoreStories?: boolean;
@@ -70,7 +73,14 @@ function buildDaemonArgs(opts: SignalDaemonOpts): string[] {
   }
   args.push("daemon");
   args.push("--http", `${opts.httpHost}:${opts.httpPort}`);
-  args.push("--no-receive-stdout");
+
+  const useTcp = Boolean(opts.tcpHost && opts.tcpPort);
+  if (useTcp) {
+    args.push("--tcp", `${opts.tcpHost}:${opts.tcpPort}`);
+    // Events arrive over the TCP socket — don't suppress stdout receive
+  } else {
+    args.push("--no-receive-stdout");
+  }
 
   if (opts.receiveMode) {
     args.push("--receive-mode", opts.receiveMode);

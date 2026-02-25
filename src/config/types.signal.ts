@@ -1,5 +1,5 @@
-import type { CommonChannelMessagingConfig } from "./types.channel-messaging-common.js";
 import type { OutboundRetryConfig } from "./types.base.js";
+import type { CommonChannelMessagingConfig } from "./types.channel-messaging-common.js";
 
 export type SignalReactionNotificationMode = "off" | "own" | "all" | "allowlist";
 export type SignalReactionLevel = "off" | "ack" | "minimal" | "extensive";
@@ -13,6 +13,10 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   httpHost?: string;
   /** HTTP port for signal-cli daemon (default 8080). */
   httpPort?: number;
+  /** TCP socket host for signal-cli daemon (default 127.0.0.1). */
+  tcpHost?: string;
+  /** TCP socket port for signal-cli daemon (default 7583). */
+  tcpPort?: number;
   /** signal-cli binary path (default: signal-cli). */
   cliPath?: string;
   /** Auto-start signal-cli daemon (default: true if httpUrl not set). */

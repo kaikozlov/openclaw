@@ -104,7 +104,33 @@ vi.mock("./client.js", () => ({
   streamSignalEvents: (...args: unknown[]) => streamMock(...args),
   signalCheck: (...args: unknown[]) => signalCheckMock(...args),
   signalRpcRequest: (...args: unknown[]) => signalRpcRequestMock(...args),
+  setSignalSocketClient: vi.fn(),
+  getSignalSocketClient: vi.fn(() => null),
 }));
+
+// Mock SignalSocketClient for tests that use autoStart (TCP mode).
+// Provides a fake client that instantly "connects" and delegates to the
+// abort signal for lifecycle, matching how the real client integrates
+// with the monitor's event loop.
+vi.mock("./socket-client.js", () => {
+  class MockSignalSocketClient {
+    isConnected = false;
+    onEvent?: (event: unknown) => void;
+    connect() {
+      this.isConnected = true;
+    }
+    close() {
+      this.isConnected = false;
+    }
+    async waitForConnect() {
+      this.isConnected = true;
+    }
+    async request() {
+      return {};
+    }
+  }
+  return { SignalSocketClient: MockSignalSocketClient };
+});
 
 vi.mock("./daemon.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./daemon.js")>();
