@@ -135,6 +135,15 @@ type TelegramMessageActions =
   typeof import("../../channels/plugins/actions/telegram.js").telegramMessageActions;
 type ProbeSignal = typeof import("../../signal/probe.js").probeSignal;
 type SendMessageSignal = typeof import("../../signal/send.js").sendMessageSignal;
+type ListSignalGroups = typeof import("../../signal/directory.js").listSignalGroups;
+type ListSignalContacts = typeof import("../../signal/directory.js").listSignalContacts;
+type UpdateContactSignal = typeof import("../../signal/directory.js").updateContactSignal;
+type ListGroupMembersSignal = typeof import("../../signal/groups.js").listGroupMembersSignal;
+type AddGroupMemberSignal = typeof import("../../signal/groups.js").addGroupMemberSignal;
+type RemoveGroupMemberSignal = typeof import("../../signal/groups.js").removeGroupMemberSignal;
+type UpdateGroupSignal = typeof import("../../signal/groups.js").updateGroupSignal;
+type JoinGroupSignal = typeof import("../../signal/groups.js").joinGroupSignal;
+type QuitGroupSignal = typeof import("../../signal/groups.js").quitGroupSignal;
 type MonitorSignalProvider = typeof import("../../signal/index.js").monitorSignalProvider;
 type SignalMessageActions =
   typeof import("../../channels/plugins/actions/signal.js").signalMessageActions;
@@ -319,6 +328,15 @@ export type PluginRuntime = {
     signal: {
       probeSignal: ProbeSignal;
       sendMessageSignal: SendMessageSignal;
+      listSignalGroups: ListSignalGroups;
+      listSignalContacts: ListSignalContacts;
+      updateContactSignal: UpdateContactSignal;
+      listGroupMembersSignal: ListGroupMembersSignal;
+      addGroupMemberSignal: AddGroupMemberSignal;
+      removeGroupMemberSignal: RemoveGroupMemberSignal;
+      updateGroupSignal: UpdateGroupSignal;
+      joinGroupSignal: JoinGroupSignal;
+      quitGroupSignal: QuitGroupSignal;
       monitorSignalProvider: MonitorSignalProvider;
       messageActions: SignalMessageActions;
     };
