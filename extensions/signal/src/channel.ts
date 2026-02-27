@@ -91,6 +91,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount> = {
     media: true,
     reactions: true,
     blockStreaming: true,
+    edit: true,
   },
   actions: signalMessageActions,
   streaming: {

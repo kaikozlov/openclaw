@@ -930,6 +930,8 @@ export const SignalAccountSchemaBase = z
     actions: z
       .object({
         reactions: z.boolean().optional(),
+        editMessage: z.boolean().optional(),
+        deleteMessage: z.boolean().optional(),
       })
       .strict()
       .optional(),

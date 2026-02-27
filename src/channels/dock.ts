@@ -508,6 +508,7 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
     capabilities: {
       chatTypes: ["direct", "group"],
       reactions: true,
+      edit: true,
       media: true,
       blockStreaming: true,
     },

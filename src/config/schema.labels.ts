@@ -733,6 +733,8 @@ export const FIELD_LABELS: Record<string, string> = {
   "channels.signal.retry.minDelayMs": "Signal Retry Min Delay",
   "channels.signal.retry.maxDelayMs": "Signal Retry Max Delay",
   "channels.signal.retry.jitter": "Signal Retry Jitter",
+  "channels.signal.actions.editMessage": "Signal Edit Message Action",
+  "channels.signal.actions.deleteMessage": "Signal Delete Message Action",
   "channels.imessage.cliPath": "iMessage CLI Path",
   "agents.list[].skills": "Agent Skill Filter",
   "agents.list[].identity.avatar": "Agent Avatar",
