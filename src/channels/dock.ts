@@ -19,6 +19,8 @@ import {
   resolveGoogleChatGroupToolPolicy,
   resolveIMessageGroupRequireMention,
   resolveIMessageGroupToolPolicy,
+  resolveSignalGroupRequireMention,
+  resolveSignalGroupToolPolicy,
   resolveSlackGroupRequireMention,
   resolveSlackGroupToolPolicy,
   resolveTelegramGroupRequireMention,
@@ -523,6 +525,10 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
     },
     mentions: {
       stripPatterns: () => ["\uFFFC"],
+    },
+    groups: {
+      resolveRequireMention: resolveSignalGroupRequireMention,
+      resolveToolPolicy: resolveSignalGroupToolPolicy,
     },
     threading: {
       buildToolContext: ({ context, hasRepliedRef }) =>
