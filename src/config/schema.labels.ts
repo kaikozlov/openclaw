@@ -736,6 +736,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "channels.signal.actions.editMessage": "Signal Edit Message Action",
   "channels.signal.actions.deleteMessage": "Signal Delete Message Action",
   "channels.signal.actions.stickers": "Signal Sticker Actions",
+  "channels.signal.actions.groupManagement": "Signal Group Management Actions",
   "channels.signal.tcpHost": "Signal TCP Host",
   "channels.signal.tcpPort": "Signal TCP Port",
   "channels.imessage.cliPath": "iMessage CLI Path",

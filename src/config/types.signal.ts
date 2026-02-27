@@ -47,6 +47,8 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
     deleteMessage?: boolean;
     /** Enable/disable sticker actions (`sticker`, `sticker-search`) via message tool (default: false). */
     stickers?: boolean;
+    /** Enable/disable group management actions (renameGroup, addParticipant, removeParticipant, leaveGroup, member-info). Default: true. */
+    groupManagement?: boolean;
   };
   /**
    * Controls agent reaction behavior:

@@ -935,6 +935,7 @@ export const SignalAccountSchemaBase = z
         editMessage: z.boolean().optional(),
         deleteMessage: z.boolean().optional(),
         stickers: z.boolean().optional(),
+        groupManagement: z.boolean().optional(),
       })
       .strict()
       .optional(),

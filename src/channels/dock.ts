@@ -511,6 +511,7 @@ const DOCKS: Record<ChatChannelId, ChannelDock> = {
       edit: true,
       media: true,
       blockStreaming: true,
+      groupManagement: true,
     },
     outbound: DEFAULT_OUTBOUND_TEXT_CHUNK_LIMIT_4000,
     streaming: DEFAULT_BLOCK_STREAMING_COALESCE,

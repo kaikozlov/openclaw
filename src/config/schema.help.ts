@@ -1242,6 +1242,8 @@ export const FIELD_HELP: Record<string, string> = {
     "WhatsApp channel provider configuration for access policy and message batching behavior. Use this section to tune responsiveness and direct-message routing safety for WhatsApp chats.",
   "channels.signal":
     "Signal channel provider configuration including account identity and DM policy behavior. Keep account mapping explicit so routing remains stable across multi-device setups.",
+  "channels.signal.actions.groupManagement":
+    "Enable or disable group management actions (renameGroup, addParticipant, removeParticipant, leaveGroup, member-info) via the message tool. Default: true.",
   "channels.imessage":
     "iMessage channel provider configuration for CLI integration and DM access policy handling. Use explicit CLI paths when runtime environments have non-standard binary locations.",
   "channels.bluebubbles":
