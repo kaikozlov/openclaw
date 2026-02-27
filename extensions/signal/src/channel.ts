@@ -62,6 +62,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount> = {
     chatTypes: ["direct", "group"],
     media: true,
     reactions: true,
+    blockStreaming: true,
   },
   actions: signalMessageActions,
   streaming: {
