@@ -1302,6 +1302,10 @@ export const FIELD_HELP: Record<string, string> = {
     "Enable/disable editing previously sent messages via the message tool (default: true).",
   "channels.signal.actions.deleteMessage":
     "Enable/disable deleting previously sent messages via the message tool (default: true).",
+  "channels.signal.tcpHost":
+    "TCP socket host for signal-cli daemon when using persistent socket transport (default: 127.0.0.1).",
+  "channels.signal.tcpPort":
+    "TCP socket port for signal-cli daemon when using persistent socket transport (default: 7583).",
   "channels.imessage.configWrites":
     "Allow iMessage to write config in response to channel events/commands (default: true).",
   "channels.imessage.cliPath":

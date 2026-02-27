@@ -2,11 +2,27 @@ import { randomUUID } from "node:crypto";
 import { computeBackoff, sleepWithAbort } from "../infra/backoff.js";
 import { resolveFetch } from "../infra/fetch.js";
 import { fetchWithTimeout } from "../utils/fetch-timeout.js";
+import type { SignalSocketClient } from "./socket-client.js";
 
 export type SignalRpcOptions = {
   baseUrl: string;
   timeoutMs?: number;
+  socketClient?: SignalSocketClient;
 };
+
+// ---------------------------------------------------------------------------
+// Socket client registry — allows the monitor to register a persistent TCP
+// connection so that signalRpcRequest routes through the socket when available.
+// ---------------------------------------------------------------------------
+let activeSocketClient: SignalSocketClient | null = null;
+
+export function setSignalSocketClient(client: SignalSocketClient | null): void {
+  activeSocketClient = client;
+}
+
+export function getSignalSocketClient(): SignalSocketClient | null {
+  return activeSocketClient;
+}
 
 export type SignalRpcErrorPayload = {
   code?: number;
@@ -224,6 +240,14 @@ export async function signalRpcRequest<T = unknown>(
   params: Record<string, unknown> | undefined,
   opts: SignalRpcOptions,
 ): Promise<T> {
+  // Route through persistent socket when available
+  const socketClient = opts.socketClient ?? activeSocketClient;
+  if (socketClient?.isConnected) {
+    return socketClient.request<T>(method, params, {
+      timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    });
+  }
+
   const baseUrl = normalizeBaseUrl(opts.baseUrl);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const id = randomUUID();
