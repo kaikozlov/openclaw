@@ -735,6 +735,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "channels.signal.retry.jitter": "Signal Retry Jitter",
   "channels.signal.actions.editMessage": "Signal Edit Message Action",
   "channels.signal.actions.deleteMessage": "Signal Delete Message Action",
+  "channels.signal.actions.stickers": "Signal Sticker Actions",
   "channels.imessage.cliPath": "iMessage CLI Path",
   "agents.list[].skills": "Agent Skill Filter",
   "agents.list[].identity.avatar": "Agent Avatar",

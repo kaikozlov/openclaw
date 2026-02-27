@@ -41,6 +41,8 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
     editMessage?: boolean;
     /** Enable/disable deleting previously sent messages via message tool (default: true). */
     deleteMessage?: boolean;
+    /** Enable/disable sticker actions (`sticker`, `sticker-search`) via message tool (default: false). */
+    stickers?: boolean;
   };
   /**
    * Controls agent reaction behavior:

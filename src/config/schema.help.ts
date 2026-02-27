@@ -1381,6 +1381,8 @@ export const FIELD_HELP: Record<string, string> = {
   "channels.signal.retry.minDelayMs": "Minimum retry delay in ms for Signal outbound calls.",
   "channels.signal.retry.maxDelayMs": "Maximum retry delay cap in ms for Signal outbound calls.",
   "channels.signal.retry.jitter": "Jitter factor (0-1) applied to Signal retry delays.",
+  "channels.signal.actions.stickers":
+    "Enable Signal sticker actions (sticker, sticker-search). Default: false.",
   "channels.imessage.dmPolicy":
     'Direct message access control ("pairing" recommended). "open" requires channels.imessage.allowFrom=["*"].',
   "channels.bluebubbles.dmPolicy":

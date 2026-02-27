@@ -1,8 +1,19 @@
-import { createActionGate, jsonResult, readStringParam } from "../../../agents/tools/common.js";
+import {
+  createActionGate,
+  jsonResult,
+  readNumberParam,
+  readStringArrayParam,
+  readStringParam,
+} from "../../../agents/tools/common.js";
 import { listEnabledSignalAccounts, resolveSignalAccount } from "../../../signal/accounts.js";
 import { resolveSignalReactionLevel } from "../../../signal/reaction-level.js";
 import { sendReactionSignal, removeReactionSignal } from "../../../signal/send-reactions.js";
-import { deleteMessageSignal, editMessageSignal } from "../../../signal/send.js";
+import {
+  deleteMessageSignal,
+  editMessageSignal,
+  listStickerPacksSignal,
+  sendStickerSignal,
+} from "../../../signal/send.js";
 import type { ChannelMessageActionAdapter, ChannelMessageActionName } from "../types.js";
 
 const providerId = "signal";
@@ -55,6 +66,46 @@ function resolveSignalReactionTarget(raw: string): { recipient?: string; groupId
     return groupId ? { groupId } : {};
   }
   return { recipient: normalizeSignalReactionRecipient(withoutSignal) };
+}
+
+function parseSignalStickerParams(params: Record<string, unknown>): {
+  packId: string;
+  stickerId: number;
+} {
+  const stickerIds = readStringArrayParam(params, "stickerId");
+  const packIdParam = readStringParam(params, "packId");
+  const stickerIdParam = readNumberParam(params, "stickerNum", {
+    integer: true,
+  });
+  const firstSticker = stickerIds?.[0]?.trim();
+  if (firstSticker?.includes(":")) {
+    const [packIdRaw, stickerIdRaw] = firstSticker.split(":", 2);
+    const packId = packIdRaw?.trim();
+    const stickerId = Number.parseInt(stickerIdRaw?.trim() ?? "", 10);
+    if (!packId || !Number.isFinite(stickerId) || stickerId < 0) {
+      throw new Error("Signal stickerId must be in packId:stickerId format.");
+    }
+    return { packId, stickerId };
+  }
+  const packId = packIdParam?.trim();
+  if (!packId) {
+    throw new Error("Signal sticker requires packId or stickerId=packId:stickerId.");
+  }
+  const stickerId =
+    stickerIdParam ??
+    (() => {
+      if (!firstSticker) {
+        return Number.NaN;
+      }
+      return Number.parseInt(firstSticker, 10);
+    })();
+  if (!Number.isFinite(stickerId) || stickerId < 0) {
+    throw new Error("Signal sticker requires a non-negative sticker ID.");
+  }
+  return {
+    packId,
+    stickerId: Math.trunc(stickerId),
+  };
 }
 
 async function mutateSignalReaction(params: {
@@ -116,11 +167,23 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
     if (deleteEnabled) {
       actions.add("delete");
     }
+    const stickerEnabled = configuredAccounts.some((account) =>
+      createActionGate(account.config.actions)("stickers", false),
+    );
+    if (stickerEnabled) {
+      actions.add("sticker");
+      actions.add("sticker-search");
+    }
 
     return Array.from(actions);
   },
   supportsAction: ({ action }) =>
-    action === "react" || action === "edit" || action === "delete" || action === "unsend",
+    action === "react" ||
+    action === "edit" ||
+    action === "delete" ||
+    action === "unsend" ||
+    action === "sticker" ||
+    action === "sticker-search",
 
   handleAction: async ({ action, params, cfg, accountId }) => {
     if (action === "send") {
@@ -241,6 +304,54 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
         accountId: accountId ?? undefined,
       });
       return jsonResult({ ok: true, deleted: true, messageId });
+    }
+
+    if (action === "sticker") {
+      const actionConfig = resolveSignalAccount({ cfg, accountId }).config.actions;
+      if (!createActionGate(actionConfig)("stickers", false)) {
+        throw new Error("Signal sticker actions are disabled via actions.stickers.");
+      }
+      const recipient = readSignalRecipientParam(params);
+      const { packId, stickerId } = parseSignalStickerParams(params);
+      const result = await sendStickerSignal(recipient, packId, stickerId, {
+        accountId: accountId ?? undefined,
+      });
+      return jsonResult({
+        ok: true,
+        messageId: result.messageId,
+        timestamp: result.timestamp,
+        packId,
+        stickerId,
+      });
+    }
+
+    if (action === "sticker-search") {
+      const actionConfig = resolveSignalAccount({ cfg, accountId }).config.actions;
+      if (!createActionGate(actionConfig)("stickers", false)) {
+        throw new Error("Signal sticker actions are disabled via actions.stickers.");
+      }
+      const query = readStringParam(params, "query");
+      const limit = readNumberParam(params, "limit", { integer: true });
+      const normalizedQuery = query?.trim().toLowerCase();
+      const packs = await listStickerPacksSignal({
+        accountId: accountId ?? undefined,
+      });
+      const filtered = normalizedQuery
+        ? packs.filter((pack) => {
+            const fields = [
+              typeof pack.packId === "string" ? pack.packId : "",
+              typeof pack.id === "string" ? pack.id : "",
+              typeof pack.title === "string" ? pack.title : "",
+              typeof pack.author === "string" ? pack.author : "",
+            ]
+              .join(" ")
+              .toLowerCase();
+            return fields.includes(normalizedQuery);
+          })
+        : packs;
+      const capped =
+        typeof limit === "number" && limit > 0 ? filtered.slice(0, Math.trunc(limit)) : filtered;
+      return jsonResult({ ok: true, packs: capped });
     }
 
     throw new Error(`Action ${action} not supported for ${providerId}.`);
