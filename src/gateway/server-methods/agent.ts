@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { listAgentIds } from "../../agents/agent-scope.js";
+import type { AgentInternalEvent } from "../../agents/internal-events.js";
 import { BARE_SESSION_RESET_PROMPT } from "../../auto-reply/reply/session-reset-prompt.js";
 import { agentCommand } from "../../commands/agent.js";
 import { loadConfig } from "../../config/config.js";
@@ -191,6 +192,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       groupSpace?: string;
       lane?: string;
       extraSystemPrompt?: string;
+      internalEvents?: AgentInternalEvent[];
       idempotencyKey: string;
       timeout?: number;
       bestEffortDeliver?: boolean;
@@ -563,6 +565,17 @@ export const agentHandlers: GatewayRequestHandlers = {
       return;
     }
 
+    const normalizedTurnSource = normalizeMessageChannel(turnSourceChannel);
+    const turnSourceMessageChannel =
+      normalizedTurnSource && isGatewayMessageChannel(normalizedTurnSource)
+        ? normalizedTurnSource
+        : undefined;
+    const originMessageChannel =
+      turnSourceMessageChannel ??
+      (client?.connect && isWebchatConnect(client.connect)
+        ? INTERNAL_MESSAGE_CHANNEL
+        : resolvedChannel);
+
     const deliver = request.deliver === true && resolvedChannel !== INTERNAL_MESSAGE_CHANNEL;
 
     const accepted = {
@@ -594,7 +607,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         accountId: resolvedAccountId,
         threadId: resolvedThreadId,
         runContext: {
-          messageChannel: resolvedChannel,
+          messageChannel: originMessageChannel,
           accountId: resolvedAccountId,
           groupId: resolvedGroupId,
           groupChannel: resolvedGroupChannel,
@@ -607,10 +620,11 @@ export const agentHandlers: GatewayRequestHandlers = {
         spawnedBy: spawnedByValue,
         timeout: request.timeout?.toString(),
         bestEffortDeliver,
-        messageChannel: resolvedChannel,
+        messageChannel: originMessageChannel,
         runId,
         lane: request.lane,
         extraSystemPrompt: request.extraSystemPrompt,
+        internalEvents: request.internalEvents,
         inputProvenance,
       },
       defaultRuntime,

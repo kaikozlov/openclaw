@@ -25,12 +25,8 @@ import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { logDebug } from "../../logger.js";
 import { getChildLogger } from "../../logging.js";
 import { buildPairingReply } from "../../pairing/pairing-messages.js";
-import {
-  readChannelAllowFromStore,
-  upsertChannelPairingRequest,
-} from "../../pairing/pairing-store.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
-import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
+import { DEFAULT_ACCOUNT_ID, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { fetchPluralKitMessageInfo } from "../pluralkit.js";
 import { sendMessageDiscord } from "../send.js";
 import {
@@ -38,13 +34,14 @@ import {
   isDiscordGroupAllowedByPolicy,
   normalizeDiscordAllowList,
   normalizeDiscordSlug,
-  resolveDiscordAllowListMatch,
   resolveDiscordChannelConfigWithFallback,
   resolveDiscordGuildEntry,
   resolveDiscordMemberAccessState,
   resolveDiscordShouldRequireMention,
   resolveGroupDmAllow,
 } from "./allow-list.js";
+import { resolveDiscordDmCommandAccess } from "./dm-command-auth.js";
+import { handleDiscordDmCommandDecision } from "./dm-command-decision.js";
 import {
   formatDiscordUserTag,
   resolveDiscordSystemLocation,
@@ -176,71 +173,69 @@ export async function preflightDiscordMessage(
   }
 
   const dmPolicy = params.discordConfig?.dmPolicy ?? params.discordConfig?.dm?.policy ?? "pairing";
+  const useAccessGroups = params.cfg.commands?.useAccessGroups !== false;
+  const resolvedAccountId = params.accountId ?? DEFAULT_ACCOUNT_ID;
+  const allowNameMatching = isDangerousNameMatchingEnabled(params.discordConfig);
   let commandAuthorized = true;
   if (isDirectMessage) {
     if (dmPolicy === "disabled") {
       logVerbose("discord: drop dm (dmPolicy: disabled)");
       return null;
     }
-    if (dmPolicy !== "open") {
-      const storeAllowFrom =
-        dmPolicy === "allowlist" ? [] : await readChannelAllowFromStore("discord").catch(() => []);
-      const effectiveAllowFrom = [...(params.allowFrom ?? []), ...storeAllowFrom];
-      const allowList = normalizeDiscordAllowList(effectiveAllowFrom, ["discord:", "user:", "pk:"]);
-      const allowMatch = allowList
-        ? resolveDiscordAllowListMatch({
-            allowList,
-            candidate: {
-              id: sender.id,
-              name: sender.name,
-              tag: sender.tag,
-            },
-            allowNameMatching: isDangerousNameMatchingEnabled(params.discordConfig),
-          })
-        : { allowed: false };
-      const allowMatchMeta = formatAllowlistMatchMeta(allowMatch);
-      const permitted = allowMatch.allowed;
-      if (!permitted) {
-        commandAuthorized = false;
-        if (dmPolicy === "pairing") {
-          const { code, created } = await upsertChannelPairingRequest({
-            channel: "discord",
-            id: author.id,
-            meta: {
-              tag: formatDiscordUserTag(author),
-              name: author.username ?? undefined,
-            },
-          });
-          if (created) {
-            logVerbose(
-              `discord pairing request sender=${author.id} tag=${formatDiscordUserTag(author)} (${allowMatchMeta})`,
+    const dmAccess = await resolveDiscordDmCommandAccess({
+      accountId: resolvedAccountId,
+      dmPolicy,
+      configuredAllowFrom: params.allowFrom ?? [],
+      sender: {
+        id: sender.id,
+        name: sender.name,
+        tag: sender.tag,
+      },
+      allowNameMatching,
+      useAccessGroups,
+    });
+    commandAuthorized = dmAccess.commandAuthorized;
+    if (dmAccess.decision !== "allow") {
+      const allowMatchMeta = formatAllowlistMatchMeta(
+        dmAccess.allowMatch.allowed ? dmAccess.allowMatch : undefined,
+      );
+      await handleDiscordDmCommandDecision({
+        dmAccess,
+        accountId: resolvedAccountId,
+        sender: {
+          id: author.id,
+          tag: formatDiscordUserTag(author),
+          name: author.username ?? undefined,
+        },
+        onPairingCreated: async (code) => {
+          logVerbose(
+            `discord pairing request sender=${author.id} tag=${formatDiscordUserTag(author)} (${allowMatchMeta})`,
+          );
+          try {
+            await sendMessageDiscord(
+              `user:${author.id}`,
+              buildPairingReply({
+                channel: "discord",
+                idLine: `Your Discord user id: ${author.id}`,
+                code,
+              }),
+              {
+                token: params.token,
+                rest: params.client.rest,
+                accountId: params.accountId,
+              },
             );
-            try {
-              await sendMessageDiscord(
-                `user:${author.id}`,
-                buildPairingReply({
-                  channel: "discord",
-                  idLine: `Your Discord user id: ${author.id}`,
-                  code,
-                }),
-                {
-                  token: params.token,
-                  rest: params.client.rest,
-                  accountId: params.accountId,
-                },
-              );
-            } catch (err) {
-              logVerbose(`discord pairing reply failed for ${author.id}: ${String(err)}`);
-            }
+          } catch (err) {
+            logVerbose(`discord pairing reply failed for ${author.id}: ${String(err)}`);
           }
-        } else {
+        },
+        onUnauthorized: async () => {
           logVerbose(
             `Blocked unauthorized discord sender ${sender.id} (dmPolicy=${dmPolicy}, ${allowMatchMeta})`,
           );
-        }
-        return null;
-      }
-      commandAuthorized = true;
+        },
+      });
+      return null;
     }
   }
 
@@ -575,7 +570,7 @@ export async function preflightDiscordMessage(
     guildInfo,
     memberRoleIds,
     sender,
-    allowNameMatching: isDangerousNameMatchingEnabled(params.discordConfig),
+    allowNameMatching,
   });
 
   if (!isDirectMessage) {
@@ -592,10 +587,9 @@ export async function preflightDiscordMessage(
             name: sender.name,
             tag: sender.tag,
           },
-          { allowNameMatching: isDangerousNameMatchingEnabled(params.discordConfig) },
+          { allowNameMatching },
         )
       : false;
-    const useAccessGroups = params.cfg.commands?.useAccessGroups !== false;
     const commandGate = resolveControlCommandGate({
       useAccessGroups,
       authorizers: [
