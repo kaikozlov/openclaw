@@ -909,7 +909,7 @@ describe("signalMessageActions", () => {
     sendReactionSignal.mockClear();
     await runSignalAction(
       "react",
-      { to: "+15559999999", emoji: "🔥" },
+      { to: "+15559999999", emoji: "🔥", targetAuthor: "+15550001111" },
       { toolContext: { currentMessageId: "1737630212345" } },
     );
     expect(sendReactionSignal).toHaveBeenCalledTimes(1);
